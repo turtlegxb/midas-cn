@@ -2,6 +2,7 @@ from typing import Optional
 
 from .base_client import BaseLLMClient
 from .openai_client import OpenAIClient
+from .openrouter_client import OpenRouterClient
 from .anthropic_client import AnthropicClient
 from .google_client import GoogleClient
 
@@ -34,8 +35,11 @@ def create_llm_client(
     """
     provider_lower = provider.lower()
 
-    if provider_lower in ("openai", "ollama", "openrouter"):
+    if provider_lower in ("openai", "ollama"):
         return OpenAIClient(model, base_url, provider=provider_lower, **kwargs)
+
+    if provider_lower == "openrouter":
+        return OpenRouterClient(model, base_url, **kwargs)
 
     if provider_lower == "xai":
         return OpenAIClient(model, base_url, provider="xai", **kwargs)

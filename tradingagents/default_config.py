@@ -8,16 +8,16 @@ DEFAULT_CONFIG = {
         "dataflows/data_cache",
     ),
     # LLM settings
-    "llm_provider": "openai",
-    "deep_think_llm": "gpt-5.2",
-    "quick_think_llm": "gpt-5-mini",
-    "backend_url": "https://api.openai.com/v1",
+    "llm_provider": "openrouter",
+    "deep_think_llm": "nvidia/nemotron-3-super-120b-a12b:free",
+    "quick_think_llm": "nvidia/nemotron-3-super-120b-a12b:free",
+    "backend_url": "https://openrouter.ai/api/v1",
     # Provider-specific thinking configuration
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
     "anthropic_effort": None,           # "high", "medium", "low"
     # Debate and discussion settings
-    "max_debate_rounds": 1,
+    "max_debate_rounds": 2,
     "max_risk_discuss_rounds": 1,
     "max_recur_limit": 100,
     # Data vendor configuration

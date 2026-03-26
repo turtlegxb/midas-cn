@@ -119,13 +119,9 @@ pip install .
 
 ### Required APIs
 
-TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
+TradingAgents supports multiple LLM families. In this fork, all hosted models are forwarded through OpenRouter, so you only need:
 
 ```bash
-export OPENAI_API_KEY=...          # OpenAI (GPT)
-export GOOGLE_API_KEY=...          # Google (Gemini)
-export ANTHROPIC_API_KEY=...       # Anthropic (Claude)
-export XAI_API_KEY=...             # xAI (Grok)
 export OPENROUTER_API_KEY=...      # OpenRouter
 export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
 ```
@@ -164,7 +160,7 @@ An interface will appear showing results as they load, letting you track the age
 
 ### Implementation Details
 
-We built TradingAgents with LangGraph to ensure flexibility and modularity. The framework supports multiple LLM providers: OpenAI, Google, Anthropic, xAI, OpenRouter, and Ollama.
+We built TradingAgents with LangGraph to ensure flexibility and modularity. The framework supports OpenAI, Google, Anthropic, xAI, OpenRouter, and Ollama model families. Hosted models are routed through OpenRouter's OpenAI-compatible API.
 
 ### Python Usage
 
@@ -191,12 +187,15 @@ config = DEFAULT_CONFIG.copy()
 config["llm_provider"] = "openai"        # openai, google, anthropic, xai, openrouter, ollama
 config["deep_think_llm"] = "gpt-5.2"     # Model for complex reasoning
 config["quick_think_llm"] = "gpt-5-mini" # Model for quick tasks
+config["backend_url"] = "https://openrouter.ai/api/v1"
 config["max_debate_rounds"] = 2
 
 ta = TradingAgentsGraph(debug=True, config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 print(decision)
 ```
+
+If you want to use a non-listed OpenRouter model directly, set `llm_provider = "openrouter"` and pass the full OpenRouter model id, for example `nvidia/nemotron-3-super-120b-a12b:free`.
 
 See `tradingagents/default_config.py` for all configuration options.
 

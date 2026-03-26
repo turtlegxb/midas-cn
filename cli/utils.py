@@ -263,13 +263,12 @@ def select_deep_thinking_agent(provider) -> str:
     return choice
 
 def select_llm_provider() -> tuple[str, str]:
-    """Select the OpenAI api url using interactive selection."""
-    # Define OpenAI api options with their corresponding endpoints
+    """Select the model family and matching backend endpoint."""
     BASE_URLS = [
-        ("OpenAI", "https://api.openai.com/v1"),
-        ("Google", "https://generativelanguage.googleapis.com/v1"),
-        ("Anthropic", "https://api.anthropic.com/"),
-        ("xAI", "https://api.x.ai/v1"),
+        ("OpenAI", "https://openrouter.ai/api/v1"),
+        ("Google", "https://openrouter.ai/api/v1"),
+        ("Anthropic", "https://openrouter.ai/api/v1"),
+        ("xAI", "https://openrouter.ai/api/v1"),
         ("Openrouter", "https://openrouter.ai/api/v1"),
         ("Ollama", "http://localhost:11434/v1"),
     ]
@@ -291,7 +290,7 @@ def select_llm_provider() -> tuple[str, str]:
     ).ask()
     
     if choice is None:
-        console.print("\n[red]no OpenAI backend selected. Exiting...[/red]")
+        console.print("\n[red]No LLM backend selected. Exiting...[/red]")
         exit(1)
     
     display_name, url = choice
