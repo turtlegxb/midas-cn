@@ -101,7 +101,7 @@ async def analyze(
 def main() -> None:
     load_dotenv()
 
-    token = os.getenv("DISCORD_BOT_TOKEN", 'MTQ4NjcyNjgxODA3MjYyOTM4OQ.GjSVAZ.2xbqE9ldQFfVn3BgHSgX8Y1DwOwmlCR224VblM')
+    token = os.getenv("DISCORD_BOT_TOKEN")
     if not token:
         raise RuntimeError("DISCORD_BOT_TOKEN is not set.")
 
