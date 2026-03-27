@@ -77,34 +77,31 @@ async def analyze(
     ticker = ticker.strip().upper()
     trade_date = trade_date or dt.date.today().isoformat()
 
-    await interaction.response.defer(thinking=True)
-    response_message = await interaction.original_response()
+    await interaction.response.send_message(f"Starting analysis for `{ticker}` on `{trade_date}`... This may take several minutes.")
+    channel = interaction.channel
 
     async with bot.analysis_lock:
         try:
             markdown = await asyncio.to_thread(run_analysis_and_format, ticker, trade_date)
         except Exception as exc:
-            await response_message.edit(
-                content=f"Analysis failed for `{ticker}` on `{trade_date}`.\n```text\n{exc}\n```"
-            )
+            if channel:
+                await channel.send(
+                    content=f"{interaction.user.mention} Analysis failed for `{ticker}` on `{trade_date}`.\n```text\n{exc}\n```"
+                )
             return
 
     chunks = list(split_for_discord(markdown))
     if not chunks:
-        await response_message.edit(content="No result generated.")
+        if channel:
+            await channel.send(content=f"{interaction.user.mention} No result generated for `{ticker}`.")
         return
 
-    await response_message.edit(
-        content=f"Analysis complete for `{ticker}` on `{trade_date}`. Result posted below."
-    )
-
-    channel = interaction.channel
-    if channel is None:
-        return
-
-    await channel.send(chunks[0])
-    for chunk in chunks[1:]:
-        await channel.send(chunk)
+    if channel:
+        await channel.send(
+            content=f"{interaction.user.mention} Analysis complete for `{ticker}` on `{trade_date}`. Result posted below."
+        )
+        for chunk in chunks:
+            await channel.send(chunk)
 
 
 def main() -> None:
