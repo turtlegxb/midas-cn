@@ -4,7 +4,7 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 
 from midas_cn.config import load_config
-from midas_cn.models import OpportunityGrade, QualityStatus, SourceStatus, StockPool, StockPoolEntry
+from midas_cn.models import OpportunityGrade, QualityGate, QualityStatus, SourceStatus, StockPool, StockPoolEntry
 from midas_cn.orchestration.factory import build_trading_desk
 from midas_cn.pools.storage import StockPoolArchive
 from midas_cn.reports.builder import DailyReportBuilder
@@ -12,6 +12,46 @@ from midas_cn.reports.markdown import MarkdownReportRenderer
 
 
 class DailyReportTest(unittest.TestCase):
+    def test_pool_score_uses_saturation_instead_of_clamping_to_one(self):
+        builder = DailyReportBuilder()
+        pools = [
+            StockPool(
+                name="main_net_inflow_top20",
+                description="主力净额流入top20，不含ST",
+                entries=[StockPoolEntry("300001.SZ", "样本科技", "主力净流入", 1, {"今日主力净流入-净额": 2_000_000_000})],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            ),
+            StockPool(
+                name="small_float_net_inflow_top20",
+                description="小市值净流入top20，不含ST",
+                entries=[StockPoolEntry("300001.SZ", "样本科技", "小市值净流入", 1, {"今日主力净流入-净额": 2_000_000_000})],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            ),
+            StockPool(
+                name="limit_up",
+                description="当日涨停，不含ST",
+                entries=[StockPoolEntry("300001.SZ", "样本科技", "当日涨停", 1, {"成交额": 20_000_000_000})],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            ),
+        ]
+
+        opportunities, _ = builder.rank_report_opportunities(
+            [],
+            QualityGate(status=QualityStatus.PASS),
+            pools,
+            {"300001.SZ": {"status": "success", "technical": {"trend_strength": 1, "ma_alignment": 1, "rsi": 60, "volume_ratio": 2}}},
+        )
+
+        self.assertEqual(len(opportunities), 1)
+        self.assertLess(opportunities[0].score, 0.95)
+        self.assertLess(opportunities[0].evidence["pool_score"], 0.92)
+
     def test_hybrid_news_sort_prioritizes_important_disclosures(self):
         builder = DailyReportBuilder(opportunity_news_sort="hybrid")
         items = [

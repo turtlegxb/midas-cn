@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime
+import math
 
 from midas_cn.models import (
     DailyReport,
@@ -1038,17 +1039,20 @@ class DailyReportBuilder:
                         "symbol": entry.symbol,
                         "name": entry.name,
                         "score": 0.0,
+                        "pool_contributions": [],
                         "risk": [],
                         "pools": [],
                         "metrics": {},
                     },
                 )
                 contribution = self._pool_score(pool, entry)
-                item["score"] += contribution
+                item["pool_contributions"].append(contribution)
                 item["pools"].append(pool.name)
                 item["metrics"].update(entry.metrics)
                 if pool.name == "limit_down":
                     item["risk"].append("当日跌停")
+        for item in candidates.values():
+            item["score"] = self._aggregate_pool_score(item["pool_contributions"])
 
         opportunities = [
             self._pool_candidate_to_opportunity(item, quality_gate, technical_profiles.get(item["symbol"], {}))
@@ -1075,6 +1079,13 @@ class DailyReportBuilder:
         if "今日主力净流入-净额" in entry.metrics:
             score += min((to_number(entry.metrics.get("今日主力净流入-净额")) or 0) / 1_000_000_000, 0.10)
         return score
+
+    def _aggregate_pool_score(self, contributions: list[float]) -> float:
+        positive = sum(score for score in contributions if score > 0)
+        negative = sum(score for score in contributions if score < 0)
+        positive_score = 0.95 * (1 - math.exp(-positive / 1.15)) if positive > 0 else 0.0
+        negative_score = max(negative, -0.65)
+        return round(max(-1.0, min(0.92, positive_score + negative_score)), 3)
 
     def _pool_candidate_to_opportunity(self, item: dict, quality_gate: QualityGate, technical_result: dict) -> Opportunity:
         technical = dict(technical_result.get("technical") or {})
