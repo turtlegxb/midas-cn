@@ -18,10 +18,19 @@ POOL_BROKEN_LIMIT_UP = "broken_limit_up"
 
 
 class AkShareStockPoolBuilder:
-    def __init__(self, akshare_module, top_n: int = 20, small_float_cap: float = 100_000_000_000):
+    def __init__(
+        self,
+        akshare_module,
+        top_n: int = 20,
+        small_float_cap: float = 100_000_000_000,
+        industry_enrich_limit: int = 8,
+        industry_enrich_timeout_seconds: float = 8.0,
+    ):
         self.akshare = akshare_module
         self.top_n = top_n
         self.small_float_cap = small_float_cap
+        self.industry_enrich_limit = industry_enrich_limit
+        self.industry_enrich_timeout_seconds = industry_enrich_timeout_seconds
         self._industry_cache: dict[str, str] = {}
 
     def build(self, trade_date: str | None = None) -> list[StockPool]:
@@ -200,6 +209,8 @@ class AkShareStockPoolBuilder:
         return entries
 
     def _fill_missing_industries(self, pools: list[StockPool]) -> list[StockPool]:
+        started_at = time.monotonic()
+        lookup_count = 0
         enriched_pools = []
         for pool in pools:
             enriched_entries = []
@@ -207,6 +218,13 @@ class AkShareStockPoolBuilder:
                 if entry.metrics.get("所属行业"):
                     enriched_entries.append(entry)
                     continue
+                if lookup_count >= self.industry_enrich_limit:
+                    enriched_entries.append(entry)
+                    continue
+                if time.monotonic() - started_at >= self.industry_enrich_timeout_seconds:
+                    enriched_entries.append(entry)
+                    continue
+                lookup_count += 1
                 industry = self._industry_for_symbol(entry.symbol)
                 if not industry:
                     enriched_entries.append(entry)
@@ -237,28 +255,25 @@ class AkShareStockPoolBuilder:
         code = normalize_symbol(symbol).split(".", 1)[0]
         if code in self._industry_cache:
             return self._industry_cache[code]
-        fetch = getattr(self.akshare, "stock_individual_info_em", None)
-        if not fetch:
-            self._industry_cache[code] = ""
-            return ""
-        for attempt in range(3):
-            try:
-                frame = fetch(symbol=code)
-                rows = list(frame.to_dict("records")) if hasattr(frame, "to_dict") else list(frame)
-                for row in rows:
-                    item = str(row_value(row, "item") or "").strip()
-                    value = str(row_value(row, "value") or "").strip()
-                    if item == "行业" and value:
-                        self._industry_cache[code] = value
-                        return value
-                break
-            except Exception:
-                if attempt < 2:
-                    time.sleep(0.8 * (attempt + 1))
         industry = self._industry_from_cninfo(code)
         if industry:
             self._industry_cache[code] = industry
             return industry
+        fetch = getattr(self.akshare, "stock_individual_info_em", None)
+        if not fetch:
+            self._industry_cache[code] = ""
+            return ""
+        try:
+            frame = fetch(symbol=code)
+            rows = list(frame.to_dict("records")) if hasattr(frame, "to_dict") else list(frame)
+            for row in rows:
+                item = str(row_value(row, "item") or "").strip()
+                value = str(row_value(row, "value") or "").strip()
+                if item == "行业" and value:
+                    self._industry_cache[code] = value
+                    return value
+        except Exception:
+            pass
         self._industry_cache[code] = ""
         return ""
 

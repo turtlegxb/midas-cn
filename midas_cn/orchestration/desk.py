@@ -209,6 +209,8 @@ class TradingDesk:
             akshare_module,
             top_n=int(pool_config.get("top_n", 20)),
             small_float_cap=float(pool_config.get("small_float_cap", 100_000_000_000)),
+            industry_enrich_limit=int(pool_config.get("industry_enrich_limit", 8)),
+            industry_enrich_timeout_seconds=float(pool_config.get("industry_enrich_timeout_seconds", 8)),
         ).build(trade_date)
         self.pool_archive.save(trade_date, pools)
         return pools
@@ -217,8 +219,6 @@ class TradingDesk:
         critical_names = {"main_net_inflow_top20", "small_float_net_inflow_top20"}
         for pool in stock_pools:
             if pool.name in critical_names and pool.status == SourceStatus.FAILED:
-                return True
-            if any(entry.metrics and not entry.metrics.get("所属行业") for entry in pool.entries):
                 return True
         return False
 

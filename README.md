@@ -74,6 +74,8 @@ opportunity_news_enabled = true
 [pools]
 build_if_missing = true
 technical_limit = 20
+industry_enrich_limit = 8
+industry_enrich_timeout_seconds = 8
 
 [cache]
 data_dir = "output/cache"

@@ -46,6 +46,8 @@ top_n = 20
 small_float_cap = 100000000000
 build_if_missing = true
 technical_limit = 20
+industry_enrich_limit = 8
+industry_enrich_timeout_seconds = 8
 
 [xueqiu]
 enabled = true

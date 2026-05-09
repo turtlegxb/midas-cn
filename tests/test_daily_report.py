@@ -375,7 +375,7 @@ class DailyReportTest(unittest.TestCase):
                 ]
             )
         )
-        self.assertTrue(
+        self.assertFalse(
             desk._stock_pool_cache_needs_rebuild(
                 [
                     StockPool(
