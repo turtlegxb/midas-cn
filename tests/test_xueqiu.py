@@ -1,4 +1,5 @@
 import unittest
+import os
 from tempfile import TemporaryDirectory
 from pathlib import Path
 
@@ -46,6 +47,16 @@ class XueqiuTest(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.status, SourceStatus.SUCCESS)
         self.assertEqual(loaded.position_changes[0].stock_symbol, "300750.SZ")
+
+    def test_archive_expires(self):
+        snapshot = XueqiuSnapshot(as_of="20260508", status=SourceStatus.SUCCESS)
+        with TemporaryDirectory() as temp_dir:
+            archive = XueqiuArchive(Path(temp_dir), ttl_seconds=1)
+            path = archive.save("20260508", snapshot)
+            old_timestamp = path.stat().st_mtime - 2
+            os.utime(path, (old_timestamp, old_timestamp))
+
+            self.assertIsNone(archive.load("20260508"))
 
     def test_tracker_uses_timeline_url_when_configured(self):
         class FakeClient:

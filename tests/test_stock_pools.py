@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import unittest
 from datetime import date
+import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from midas_cn.models import SourceStatus
 from midas_cn.pools.builder import (
@@ -12,10 +15,13 @@ from midas_cn.pools.builder import (
     POOL_SMALL_FLOAT_NET_INFLOW,
     POOL_TURNOVER,
     AkShareStockPoolBuilder,
+    combine_sources,
     is_st_name,
     latest_report_trade_date,
+    normalize_fund_rows,
     to_number,
 )
+from midas_cn.pools.storage import StockPoolArchive
 
 
 class FakeAkShare:
@@ -54,6 +60,21 @@ class FailingAkShare(FakeAkShare):
         raise ConnectionError("fund source down")
 
 
+class FundFlowFallbackAkShare(FakeAkShare):
+    def stock_main_fund_flow(self, symbol: str):
+        raise ConnectionError("eastmoney fund source down")
+
+    def stock_individual_fund_flow_rank(self, indicator: str):
+        raise ConnectionError("eastmoney rank source down")
+
+    def stock_fund_flow_individual(self, symbol: str):
+        return [
+            {"股票代码": "000002", "股票简称": "万科A", "净额": "3.2亿", "涨跌幅": "1.5%", "成交额": "8亿"},
+            {"股票代码": "600001", "股票简称": "浦发样本", "净额": "1.1亿", "涨跌幅": "-0.5%", "成交额": "5亿"},
+            {"股票代码": "000003", "股票简称": "ST测试", "净额": "9亿", "涨跌幅": "5.0%", "成交额": "10亿"},
+        ]
+
+
 class StockPoolBuilderTest(unittest.TestCase):
     def test_builds_all_pools_and_filters_st(self):
         pools = AkShareStockPoolBuilder(FakeAkShare(), top_n=2).build("20260508")
@@ -86,12 +107,43 @@ class StockPoolBuilderTest(unittest.TestCase):
         self.assertEqual(by_name[POOL_LIMIT_UP].status, SourceStatus.SUCCESS)
         self.assertEqual(len(by_name[POOL_LIMIT_UP].entries), 1)
 
+    def test_fund_flow_uses_individual_fallback_and_normalizes_columns(self):
+        pools = AkShareStockPoolBuilder(FundFlowFallbackAkShare(), top_n=2).build("20260508")
+        by_name = {pool.name: pool for pool in pools}
+
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].status, SourceStatus.FALLBACK)
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].source, "akshare.stock_fund_flow_individual(即时)")
+        self.assertIn("eastmoney fund source down", by_name[POOL_MAIN_NET_INFLOW].error_message or "")
+        self.assertEqual([entry.symbol for entry in by_name[POOL_MAIN_NET_INFLOW].entries], ["000002.SZ", "600001.SH"])
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics["净额"], 320_000_000)
+        self.assertEqual(by_name[POOL_SMALL_FLOAT_NET_INFLOW].status, SourceStatus.FALLBACK)
+        self.assertEqual(
+            by_name[POOL_SMALL_FLOAT_NET_INFLOW].source,
+            "akshare.stock_fund_flow_individual(即时) + akshare.stock_zh_a_spot_em",
+        )
+        self.assertEqual([entry.symbol for entry in by_name[POOL_SMALL_FLOAT_NET_INFLOW].entries], ["000002.SZ", "600001.SH"])
+
     def test_helpers_parse_dates_and_values(self):
         self.assertEqual(latest_report_trade_date(date(2026, 5, 9)), "20260508")
         self.assertEqual(to_number("1.5亿"), 150_000_000)
         self.assertEqual(to_number("3,200万"), 32_000_000)
         self.assertEqual(to_number("12.3%"), 12.3)
         self.assertTrue(is_st_name("*ST样本"))
+        self.assertEqual(normalize_fund_rows([{"股票代码": 1, "股票简称": "样本", "净额": "1亿"}])[0]["代码"], "000001")
+        self.assertEqual(
+            combine_sources(("成功源", SourceStatus.FALLBACK), ("失败源", SourceStatus.FAILED)),
+            "成功源",
+        )
+
+    def test_stock_pool_cache_expires(self):
+        with TemporaryDirectory() as temp_dir:
+            archive = StockPoolArchive(Path(temp_dir), ttl_seconds=1)
+            pools = AkShareStockPoolBuilder(FakeAkShare(), top_n=1).build("20260508")
+            path = archive.save("20260508", pools)
+            old_timestamp = path.stat().st_mtime - 2
+            os.utime(path, (old_timestamp, old_timestamp))
+
+            self.assertEqual(archive.load("20260508"), [])
 
 
 if __name__ == "__main__":

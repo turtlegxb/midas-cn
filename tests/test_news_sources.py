@@ -73,6 +73,7 @@ class NewsSourceTest(unittest.TestCase):
 
     def test_akshare_fetch_source_preserves_failure_reason(self):
         provider = object.__new__(AkShareMarketDataProvider)
+        provider.timeout_seconds = 12
 
         def fail():
             raise RuntimeError("dns failed")
@@ -92,9 +93,35 @@ class NewsSourceTest(unittest.TestCase):
         self.assertEqual(result.error_type, "RuntimeError")
         self.assertIn("dns failed", result.error_message)
 
+    def test_akshare_fetch_source_times_out(self):
+        provider = object.__new__(AkShareMarketDataProvider)
+        provider.timeout_seconds = 0.01
+
+        def hang():
+            import time
+
+            time.sleep(1)
+            return []
+
+        result = provider._fetch_source(
+            data="个股新闻/公告",
+            source="eastmoney_stock_news",
+            provider="akshare.stock_news_em",
+            context={"symbol": "600519.SH"},
+            fetch=hang,
+            lookback_days=2,
+            limit=10,
+            retries=0,
+        )
+
+        self.assertEqual(result.status, SourceStatus.FAILED)
+        self.assertEqual(result.error_type, "TimeoutError")
+        self.assertIn("timed out", result.error_message)
+
     def test_akshare_security_news_results_are_per_source_with_fallback(self):
         provider = object.__new__(AkShareMarketDataProvider)
         provider.fallback = MockMarketDataProvider()
+        provider.timeout_seconds = 12
 
         def fail_source(*args, **kwargs):
             raise RuntimeError("remote failed")

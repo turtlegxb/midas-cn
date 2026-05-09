@@ -35,6 +35,11 @@ class AppConfig:
         return PROJECT_ROOT / configured
 
     @property
+    def data_cache_dir(self) -> Path:
+        configured = self.raw.get("cache", {}).get("data_dir", "output/cache")
+        return PROJECT_ROOT / configured
+
+    @property
     def default_symbols(self) -> list[str]:
         return list(self.raw.get("universe", {}).get("default_symbols", []))
 

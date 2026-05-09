@@ -110,7 +110,8 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("- 板块：软件", rendered)
         self.assertIn("- 最新新闻：", rendered)
         self.assertNotIn("- 最新新闻：暂无", rendered)
-        self.assertIn("- 最新新闻：1. ", rendered)
+        self.assertIn("  - [300001.SZ", rendered)
+        self.assertIn("](https://example.com/300001.SZ/", rendered)
         self.assertIn("使用回退源", rendered)
         self.assertIn("东方财富涨停池", rendered)
         self.assertNotIn("akshare.", rendered)
@@ -180,3 +181,23 @@ class DailyReportTest(unittest.TestCase):
         self.assertLessEqual(len(report.opportunities), 10)
         self.assertEqual(report.metadata["hidden_opportunities"]["display_limit"], 10)
         self.assertGreaterEqual(report.metadata["hidden_opportunities"]["below_b_count"], 2)
+
+    def test_failed_critical_stock_pool_cache_is_rebuilt(self):
+        config = load_config("config/system.toml")
+        config.raw.setdefault("data", {})["provider"] = "mock"
+        desk = build_trading_desk(config)
+
+        self.assertTrue(
+            desk._stock_pool_cache_needs_rebuild(
+                [
+                    StockPool(
+                        name="main_net_inflow_top20",
+                        description="主力净额流入top20，不含ST",
+                        entries=[],
+                        source="akshare.stock_main_fund_flow",
+                        status=SourceStatus.FAILED,
+                        as_of="20260508",
+                    )
+                ]
+            )
+        )

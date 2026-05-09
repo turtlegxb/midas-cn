@@ -264,9 +264,12 @@ def source_label(value: object) -> str:
         "SourceResult": "新闻源检查",
         "akshare.stock_main_fund_flow": "东方财富主力资金流",
         "akshare.stock_individual_fund_flow_rank(今日)": "东方财富个股资金排行",
+        "akshare.stock_fund_flow_individual(即时)": "个股即时资金流",
         "akshare.stock_zh_a_spot_em": "东方财富A股实时行情",
         "akshare.stock_main_fund_flow + akshare.stock_zh_a_spot_em": "东方财富资金流与行情",
         "akshare.stock_main_fund_flow + sina.Market_Center.getHQNodeData": "东方财富资金流与新浪行情",
+        "akshare.stock_individual_fund_flow_rank(今日) + sina.Market_Center.getHQNodeData": "个股资金排行与新浪行情",
+        "akshare.stock_fund_flow_individual(即时) + sina.Market_Center.getHQNodeData": "个股即时资金流与新浪行情",
         "sina.Market_Center.getHQNodeData": "新浪A股实时行情",
         "akshare.stock_zt_pool_em": "东方财富涨停池",
         "akshare.stock_zt_pool_dtgc_em": "东方财富跌停池",
@@ -385,17 +388,19 @@ def theme_row(item: dict) -> str:
 def opportunity_card(item) -> list[str]:
     pools = "、".join(item.evidence.get("pools", [])) or "选股池"
     technical = technical_brief(item.evidence.get("technical", {}), item.evidence.get("technical_score"))
-    return [
+    rows = [
         "",
         f"**{item.symbol} {item.name}｜{item.grade.value}｜{item.score:.3f}**",
         f"- 板块：{item.evidence.get('sector') or '未分类'}",
         f"- 入选：{pools}",
-        f"- 最新新闻：{latest_news_text(item.evidence.get('news_items', []), limit=3)}",
+        "- 最新新闻：",
+        *latest_news_lines(item.evidence.get("news_items", []), limit=3),
         f"- 技术：{technical}",
         f"- 触发：{strip_pool_prefix(item.trigger)}",
         f"- 失效：{item.invalidation}",
         f"- 动作：{item.action}",
     ]
+    return rows
 
 
 def strip_pool_prefix(text: str) -> str:
@@ -439,19 +444,28 @@ def technical_brief(technical: dict, technical_score: object) -> str:
 
 
 def latest_news_text(items: list[dict], limit: int = 3) -> str:
-    if not items:
+    lines = latest_news_lines(items, limit)
+    if lines == ["  - 暂无"]:
         return "暂无"
+    return "；".join(line.removeprefix("  - ") for line in lines)
+
+
+def latest_news_lines(items: list[dict], limit: int = 3) -> list[str]:
+    if not items:
+        return ["  - 暂无"]
     sorted_items = sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)
     rows = []
-    for index, item in enumerate(sorted_items[:limit], start=1):
+    for item in sorted_items[:limit]:
         title = clean_markdown_field(item.get("title") or item.get("summary") or "暂无")
         if title == "暂无":
             continue
+        url = str(item.get("url") or "").strip()
+        title_text = f"[{title}]({url})" if url else title
         source = source_label(item.get("source") or "")
         published_at = item.get("published_at")
         suffix = f"（{source}" if source else "（"
         if published_at:
             suffix += f"，{published_at}"
         suffix += "）"
-        rows.append(f"{index}. {title}{suffix}")
-    return "；".join(rows) if rows else "暂无"
+        rows.append(f"  - {title_text}{suffix}")
+    return rows if rows else ["  - 暂无"]

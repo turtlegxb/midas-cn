@@ -251,8 +251,9 @@ class XueqiuTracker:
 
 
 class XueqiuArchive:
-    def __init__(self, archive_dir: Path):
+    def __init__(self, archive_dir: Path, ttl_seconds: int = 86_400):
         self.archive_dir = archive_dir
+        self.ttl_seconds = ttl_seconds
 
     def path_for(self, trade_date: str) -> Path:
         return self.archive_dir / f"{trade_date}.json"
@@ -260,6 +261,8 @@ class XueqiuArchive:
     def load(self, trade_date: str) -> XueqiuSnapshot | None:
         path = self.path_for(trade_date)
         if not path.exists():
+            return None
+        if self._is_expired(path):
             return None
         payload = json.loads(path.read_text(encoding="utf-8"))
         return xueqiu_snapshot_from_dict(payload)
@@ -269,6 +272,12 @@ class XueqiuArchive:
         path = self.path_for(trade_date)
         path.write_text(json.dumps(asdict(snapshot), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
         return path
+
+    def _is_expired(self, path: Path) -> bool:
+        if self.ttl_seconds <= 0:
+            return False
+        expires_at = datetime.fromtimestamp(path.stat().st_mtime) + timedelta(seconds=self.ttl_seconds)
+        return datetime.now() >= expires_at
 
 
 def xueqiu_snapshot_from_dict(payload: dict[str, Any]) -> XueqiuSnapshot:

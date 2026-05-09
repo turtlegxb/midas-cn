@@ -53,6 +53,15 @@ provider = "akshare"
 kline_period = "daily"
 kline_adjust = "qfq"
 kline_lookback = 90
+timeout_seconds = 12
+
+[pools]
+build_if_missing = true
+technical_limit = 20
+
+[cache]
+data_dir = "output/cache"
+ttl_seconds = 86400
 ```
 
 带归档运行会同时生成：

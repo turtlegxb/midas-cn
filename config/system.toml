@@ -15,12 +15,17 @@ provider = "akshare"
 kline_period = "daily"
 kline_adjust = "qfq"
 kline_lookback = 90
+timeout_seconds = 12
 
 [news]
 lookback_days = 2
 max_items_per_symbol = 20
 market_sources = ["eastmoney_global", "cctv"]
 security_sources = ["eastmoney_stock_news", "eastmoney_stock_notice"]
+
+[cache]
+data_dir = "output/cache"
+ttl_seconds = 86400
 
 [llm]
 enabled = true
@@ -37,8 +42,8 @@ enabled = true
 archive_dir = "output/pools"
 top_n = 20
 small_float_cap = 100000000000
-build_if_missing = false
-technical_limit = 40
+build_if_missing = true
+technical_limit = 20
 
 [xueqiu]
 enabled = true

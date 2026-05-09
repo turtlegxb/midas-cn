@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import time
 from typing import Any
 
 from midas_cn.data.news import row_value
@@ -35,7 +36,7 @@ class AkShareStockPoolBuilder:
                 spot_by_code,
                 as_of,
                 combine_status(fund_status, spot_status),
-                f"{fund_source} + {spot_source}",
+                combine_sources((fund_source, fund_status), (spot_source, spot_status)),
                 combine_errors(fund_error, spot_error),
             ),
             self._turnover_pool(spot_rows, as_of, spot_status, spot_source, spot_error),
@@ -75,7 +76,7 @@ class AkShareStockPoolBuilder:
             rows,
             reason="主力净额流入Top20",
             sort_field_candidates=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "净流入"),
-            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "今日涨跌幅", "涨跌幅", "最新价"),
+            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "今日涨跌幅", "涨跌幅", "最新价"),
         )
         return StockPool(
             name=POOL_MAIN_NET_INFLOW,
@@ -108,7 +109,7 @@ class AkShareStockPoolBuilder:
             merged,
             reason="流通市值<1000亿成交净额流入Top20",
             sort_field_candidates=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "净流入"),
-            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "流通市值", "今日涨跌幅", "涨跌幅", "成交额"),
+            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "流通市值", "今日涨跌幅", "涨跌幅", "成交额"),
         )
         return StockPool(
             name=POOL_SMALL_FLOAT_NET_INFLOW,
@@ -194,31 +195,47 @@ class AkShareStockPoolBuilder:
             )
         return entries
 
-    def _fetch_rows(self, fetch) -> tuple[list[dict[str, Any]], str | None]:
-        try:
-            frame = fetch()
-            if hasattr(frame, "to_dict"):
-                return list(frame.to_dict("records")), None
-            return list(frame), None
-        except Exception as exc:
-            return [], f"{type(exc).__name__}: {exc}"
+    def _fetch_rows(self, fetch, retries: int = 0, delay_seconds: float = 0.5) -> tuple[list[dict[str, Any]], str | None]:
+        last_error = None
+        for attempt in range(retries + 1):
+            try:
+                frame = fetch()
+                if hasattr(frame, "to_dict"):
+                    return list(frame.to_dict("records")), None
+                return list(frame), None
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                if attempt < retries:
+                    time.sleep(delay_seconds * (attempt + 1))
+        return [], last_error
 
     def _fetch_fund_rows(self) -> tuple[list[dict[str, Any]], SourceStatus, str, str | None]:
         rows, error = self._fetch_rows(lambda: self.akshare.stock_main_fund_flow("全部股票"))
         if not error:
-            return rows, SourceStatus.SUCCESS, "akshare.stock_main_fund_flow", None
+            return normalize_fund_rows(rows), SourceStatus.SUCCESS, "akshare.stock_main_fund_flow", None
 
         fallback = getattr(self.akshare, "stock_individual_fund_flow_rank", None)
         if fallback:
             fallback_rows, fallback_error = self._fetch_rows(lambda: fallback(indicator="今日"))
             if not fallback_error:
                 return (
-                    fallback_rows,
+                    normalize_fund_rows(fallback_rows),
                     SourceStatus.FALLBACK,
                     "akshare.stock_individual_fund_flow_rank(今日)",
                     f"primary akshare.stock_main_fund_flow failed: {error}",
                 )
             error = f"primary akshare.stock_main_fund_flow failed: {error}; fallback akshare.stock_individual_fund_flow_rank(今日) failed: {fallback_error}"
+        fallback = getattr(self.akshare, "stock_fund_flow_individual", None)
+        if fallback:
+            fallback_rows, fallback_error = self._fetch_rows(lambda: fallback(symbol="即时"), retries=2, delay_seconds=1.0)
+            if not fallback_error:
+                return (
+                    normalize_fund_rows(fallback_rows),
+                    SourceStatus.FALLBACK,
+                    "akshare.stock_fund_flow_individual(即时)",
+                    error,
+                )
+            error = f"{error}; fallback akshare.stock_fund_flow_individual(即时) failed: {fallback_error}"
         return [], SourceStatus.FAILED, "akshare.stock_main_fund_flow", error
 
     def _fetch_spot_rows(self) -> tuple[list[dict[str, Any]], SourceStatus, str, str | None]:
@@ -301,6 +318,34 @@ def sort_value(row: dict[str, Any], candidates: tuple[str, ...]) -> float:
     return float("-inf")
 
 
+def normalize_fund_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        code = row_value(row, "代码", "股票代码", "code", "symbol")
+        name = row_value(row, "名称", "股票简称", "name")
+        net_amount = row_value(row, "今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "资金流入净额")
+        pct_change = row_value(row, "今日涨跌幅", "涨跌幅", "阶段涨跌幅")
+        item = dict(row)
+        if code is not None:
+            item["代码"] = str(code).zfill(6)
+        if name is not None:
+            item["名称"] = name
+        if net_amount is not None:
+            item["净额"] = to_number(net_amount)
+            item.setdefault("今日主力净流入-净额", item["净额"])
+        if pct_change is not None:
+            item["涨跌幅"] = to_number(pct_change)
+            item.setdefault("今日涨跌幅", item["涨跌幅"])
+        return_value = row_value(row, "换手率", "连续换手率")
+        if return_value is not None:
+            item["换手率"] = to_number(return_value)
+        amount = row_value(row, "成交额")
+        if amount is not None:
+            item["成交额"] = to_number(amount)
+        normalized.append(item)
+    return normalized
+
+
 def to_number(value: Any) -> float | None:
     if value is None:
         return None
@@ -336,6 +381,13 @@ def combine_status(*statuses: SourceStatus) -> SourceStatus:
     if any(status == SourceStatus.FALLBACK for status in statuses):
         return SourceStatus.FALLBACK
     return SourceStatus.SUCCESS
+
+
+def combine_sources(*sources: tuple[str, SourceStatus]) -> str:
+    usable = [source for source, status in sources if status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
+    if usable:
+        return " + ".join(usable)
+    return " + ".join(source for source, _ in sources)
 
 
 def combine_errors(*errors: str | None) -> str | None:

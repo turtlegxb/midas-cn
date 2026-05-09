@@ -21,6 +21,7 @@ from midas_cn.risk.engine import RiskEngine
 from midas_cn.scanners.opportunity import OpportunityScanner
 from midas_cn.social import XueqiuArchive, XueqiuTracker
 from midas_cn.storage.archive import DecisionArchive
+from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts
 from midas_cn.storage.report_archive import DailyReportArchive
 from midas_cn.universe.symbols import normalize_symbols
 
@@ -38,6 +39,13 @@ class TradingDesk:
         self.config = config
         self.analysts = analysts
         data_config = {**config.section("data"), **config.section("news")}
+        cache_config = config.section("cache")
+        cache_ttl_seconds = int(cache_config.get("ttl_seconds", 86_400))
+        self.data_cache = DataCache(
+            config.data_cache_dir,
+            ttl_seconds=cache_ttl_seconds,
+        )
+        data_config["cache"] = self.data_cache
         self.provider = provider or build_provider(data_config.get("provider", "mock"), data_config)
         self.risk_engine = RiskEngine(
             max_single_position=float(config.section("risk").get("max_single_position", 0.10)),
@@ -51,8 +59,8 @@ class TradingDesk:
         )
         self.archive = DecisionArchive(config.archive_dir)
         self.report_archive = DailyReportArchive(config.report_archive_dir)
-        self.pool_archive = StockPoolArchive(config.pool_archive_dir)
-        self.xueqiu_archive = XueqiuArchive(config.social_archive_dir)
+        self.pool_archive = StockPoolArchive(config.pool_archive_dir, ttl_seconds=cache_ttl_seconds)
+        self.xueqiu_archive = XueqiuArchive(config.social_archive_dir, ttl_seconds=cache_ttl_seconds)
         self.calendar = AShareCalendar(report_days=list(config.section("system").get("report_days", [])))
         self.quality_gate = DataQualityGate(
             required_security_sections=list(config.section("quality").get("required_security_sections", [])),
@@ -123,8 +131,10 @@ class TradingDesk:
             lookback_days=int(self.config.section("news").get("lookback_days", 2)),
             limit=50,
         )
-        emit(4, "拉取核心标的上下文")
-        securities = [self.provider.get_security_context(symbol) for symbol in universe]
+        securities = []
+        for index, symbol in enumerate(universe, start=1):
+            emit(4, f"拉取核心标的上下文：{symbol} ({index}/{len(universe)})")
+            securities.append(self.provider.get_security_context(symbol))
         emit(5, "执行数据质量检查")
         quality_gate = self.quality_gate.evaluate(market, securities)
         opportunities = []
@@ -146,7 +156,7 @@ class TradingDesk:
         emit(9, "拉取雪球跟踪数据")
         xueqiu_snapshot = self._load_or_fetch_xueqiu(pool_trade_date, persist)
         emit(10, "计算选股池技术指标")
-        pool_technical_profiles = self._build_pool_technical_profiles(stock_pools)
+        pool_technical_profiles = self._build_pool_technical_profiles(stock_pools, emit)
         report_opportunities, _ = self.report_builder.rank_report_opportunities(
             opportunities,
             quality_gate,
@@ -185,11 +195,13 @@ class TradingDesk:
         pool_config = self.config.section("pools")
         if not bool(pool_config.get("enabled", True)):
             return []
-        cached = self.pool_archive.load(trade_date)
-        if cached:
-            return cached
         should_build = persist or bool(pool_config.get("build_if_missing", False))
         akshare_module = getattr(self.provider, "akshare", None)
+        cached = self.pool_archive.load(trade_date)
+        if cached and not self._stock_pool_cache_needs_rebuild(cached):
+            return cached
+        if cached and (not should_build or akshare_module is None):
+            return cached
         if not should_build or akshare_module is None:
             return []
         pools = AkShareStockPoolBuilder(
@@ -199,6 +211,13 @@ class TradingDesk:
         ).build(trade_date)
         self.pool_archive.save(trade_date, pools)
         return pools
+
+    def _stock_pool_cache_needs_rebuild(self, stock_pools) -> bool:
+        critical_names = {"main_net_inflow_top20", "small_float_net_inflow_top20"}
+        for pool in stock_pools:
+            if pool.name in critical_names and pool.status == SourceStatus.FAILED:
+                return True
+        return False
 
     def _fetch_opportunity_news(self, opportunities):
         news_config = self.config.section("news")
@@ -228,7 +247,7 @@ class TradingDesk:
             self.xueqiu_archive.save(trade_date, snapshot)
         return snapshot
 
-    def _build_pool_technical_profiles(self, stock_pools):
+    def _build_pool_technical_profiles(self, stock_pools, progress_emit=None):
         pool_config = self.config.section("pools")
         limit = int(pool_config.get("technical_limit", 40))
         if limit <= 0:
@@ -236,7 +255,10 @@ class TradingDesk:
         candidates = self._technical_candidate_symbols(stock_pools, limit)
         profiles = {}
         lookback = int(self.config.section("data").get("kline_lookback", 90))
-        for symbol in candidates:
+        total = len(candidates)
+        for index, symbol in enumerate(candidates, start=1):
+            if progress_emit:
+                progress_emit(10, f"计算选股池技术指标：{symbol} ({index}/{total})")
             try:
                 bars = self.provider.get_daily_bars(symbol, lookback)
                 technical = build_technical_profile(bars).as_dict()
@@ -265,6 +287,15 @@ class TradingDesk:
         return [symbol for symbol, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:limit]]
 
     def _build_index_profiles(self):
+        cached = self.data_cache.load("index_profiles", "default")
+        if cached:
+            return {
+                name: {
+                    **profile,
+                    "bars": kline_bars_from_dicts(profile.get("bars", [])),
+                }
+                for name, profile in cached.items()
+            }
         index_symbols = {
             "上证指数": "000001",
             "深证成指": "399001",
@@ -288,6 +319,7 @@ class TradingDesk:
                 }
             except Exception as exc:
                 profiles[name] = {"status": "failed", "bars": [], "technical": {}, "error_message": str(exc)}
+        self.data_cache.save("index_profiles", "default", profiles)
         return profiles
 
     def _get_index_daily_bars(self, name: str, code: str, lookback: int) -> list[KLineBar]:

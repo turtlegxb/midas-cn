@@ -5,6 +5,12 @@ from midas_cn.orchestration.factory import build_trading_desk
 
 
 class PipelineTest(unittest.TestCase):
+    def test_default_config_builds_stock_pools_if_cache_is_missing(self):
+        config = load_config("config/system.toml")
+
+        self.assertTrue(config.section("pools").get("build_if_missing"))
+        self.assertEqual(config.section("cache").get("ttl_seconds"), 86_400)
+
     def test_pipeline_runs_without_archive(self):
         config = load_config("config/system.toml")
         config.raw.setdefault("pools", {})["enabled"] = False
@@ -37,9 +43,14 @@ class PipelineTest(unittest.TestCase):
             progress=lambda step, total, message: events.append((step, total, message)),
         )
 
+        first_by_step = {}
+        for event in events:
+            first_by_step.setdefault(event[0], event)
+
         self.assertEqual(events[0], (1, 13, "初始化股票池与交易日历"))
         self.assertEqual(events[-1], (13, 13, "组装并保存中文报告"))
-        self.assertEqual([step for step, _, _ in events], list(range(1, 14)))
+        self.assertEqual(sorted(first_by_step), list(range(1, 14)))
+        self.assertTrue(first_by_step[4][2].startswith("拉取核心标的上下文：600519.SH"))
         self.assertTrue(all(total == 13 for _, total, _ in events))
 
 

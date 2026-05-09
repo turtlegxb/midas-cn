@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
+import signal
+import socket
+import threading
 import time
 from typing import Any
 
@@ -15,6 +18,7 @@ from midas_cn.data.news import (
     row_value,
 )
 from midas_cn.models import KLineBar, MarketSnapshot, NewsItem, SecurityContext, SourceResult, SourceStatus
+from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts, source_results_from_dicts
 
 
 class MarketDataProvider(ABC):
@@ -292,12 +296,14 @@ class MockMarketDataProvider(MarketDataProvider):
                 title=f"{name} 所属{sector}板块维持高关注度",
                 source="mock_sector_news",
                 published_at=datetime.now().date().isoformat(),
+                url=f"https://example.com/{symbol}/sector",
                 category="sector",
             ),
             NewsItem(
                 title=f"{name} 盘后数据进入机会扫描池",
                 source="mock_security_news",
                 published_at=datetime.now().date().isoformat(),
+                url=f"https://example.com/{symbol}/news",
                 category="company",
             ),
         ]
@@ -389,6 +395,8 @@ class AkShareMarketDataProvider(MarketDataProvider):
         news_lookback_days: int = 2,
         max_news_items: int = 20,
         kline_retries: int = 2,
+        timeout_seconds: float = 12.0,
+        cache: DataCache | None = None,
     ):
         try:
             import akshare as akshare_module
@@ -401,6 +409,8 @@ class AkShareMarketDataProvider(MarketDataProvider):
         self.news_lookback_days = news_lookback_days
         self.max_news_items = max_news_items
         self.kline_retries = kline_retries
+        self.timeout_seconds = timeout_seconds
+        self.cache = cache
         self.fallback = MockMarketDataProvider()
 
     def get_market_snapshot(self, benchmarks: list[str]) -> MarketSnapshot:
@@ -477,6 +487,13 @@ class AkShareMarketDataProvider(MarketDataProvider):
         return self._get_daily_bars_with_result(symbol, lookback)[1]
 
     def _get_daily_bars_with_result(self, symbol: str, lookback: int = 90) -> tuple[list[KLineBar], SourceResult]:
+        cache_key = f"{symbol}|{lookback}|{self.period}|{self.adjust}"
+        cache = getattr(self, "cache", None)
+        if cache:
+            cached = cache.load("kline", cache_key)
+            if cached:
+                bars = kline_bars_from_dicts(cached.get("bars", []))
+                return bars, source_results_from_dicts([cached["result"]])[0]
         errors: list[str] = []
         for source, provider, fetcher in [
             ("akshare_stock_zh_a_hist", "akshare.stock_zh_a_hist", self._fetch_daily_bars_eastmoney),
@@ -485,7 +502,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         ]:
             try:
                 bars = fetcher(symbol, lookback)
-                return bars, SourceResult(
+                result = SourceResult(
                     data="行情/K线",
                     source=source,
                     provider=provider,
@@ -493,10 +510,13 @@ class AkShareMarketDataProvider(MarketDataProvider):
                     checked_at=datetime.now().isoformat(),
                     context={"symbol": symbol, "lookback": str(lookback)},
                 )
+                if cache:
+                    cache.save("kline", cache_key, {"bars": bars, "result": result})
+                return bars, result
             except Exception as exc:
                 errors.append(f"{provider}:{type(exc).__name__}:{exc}")
         fallback = self.fallback.get_daily_bars_result(symbol, lookback)
-        return [], SourceResult(
+        result = SourceResult(
             data="行情/K线",
             source="akshare_kline_chain",
             provider="akshare.stock_zh_a_hist|stock_zh_a_daily|stock_zh_a_hist_tx",
@@ -507,6 +527,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
             checked_at=datetime.now().isoformat(),
             context={"symbol": symbol, "lookback": str(lookback)},
         )
+        return [], result
 
     def _fetch_daily_bars_eastmoney(self, symbol: str, lookback: int) -> list[KLineBar]:
         code = normalize_symbol_for_akshare(symbol)
@@ -562,12 +583,39 @@ class AkShareMarketDataProvider(MarketDataProvider):
         last_exc: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                return func()
+                return self._call_with_timeout(func)
             except Exception as exc:
                 last_exc = exc
                 if attempt < retries:
                     time.sleep(delay_seconds * (attempt + 1))
         raise last_exc if last_exc else RuntimeError("unknown retry failure")
+
+    def _call_with_timeout(self, func):
+        timeout_seconds = float(getattr(self, "timeout_seconds", 12.0))
+        if timeout_seconds <= 0:
+            return func()
+        previous_socket_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(timeout_seconds)
+        if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
+            try:
+                return func()
+            finally:
+                socket.setdefaulttimeout(previous_socket_timeout)
+
+        def handle_timeout(signum, frame):
+            raise TimeoutError(f"external data source timed out after {timeout_seconds:g}s")
+
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, handle_timeout)
+        previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+        try:
+            return func()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous_handler)
+            socket.setdefaulttimeout(previous_socket_timeout)
+            if previous_timer[0] > 0:
+                signal.setitimer(signal.ITIMER_REAL, previous_timer[0], previous_timer[1])
 
     def _rows_from_dataframe(self, frame: Any) -> list[dict[str, Any]]:
         if hasattr(frame, "tail"):
@@ -596,6 +644,12 @@ class AkShareMarketDataProvider(MarketDataProvider):
         lookback_days: int = 2,
         limit: int = 20,
     ) -> list[SourceResult]:
+        cache_key = f"{symbol}|{lookback_days}|{limit}|security"
+        cache = getattr(self, "cache", None)
+        if cache:
+            cached = cache.load("security_news", cache_key)
+            if cached:
+                return source_results_from_dicts(cached)
         code = normalize_symbol_for_akshare(symbol)
         results: list[SourceResult] = []
 
@@ -663,7 +717,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
 
         if not any(result.items for result in results):
             fallback_results = self.fallback.get_security_news_results(symbol, lookback_days, limit)
-            return results + [
+            results = results + [
                 SourceResult(
                     data="个股新闻/公告",
                     source=result.source,
@@ -676,12 +730,23 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 )
                 for result in fallback_results
             ]
+            if cache:
+                cache.save("security_news", cache_key, results)
+            return results
+        if cache:
+            cache.save("security_news", cache_key, results)
         return results
 
     def get_market_news(self, lookback_days: int = 2, limit: int = 50) -> list[NewsItem]:
         return flatten_source_items(self.get_market_news_results(lookback_days, limit))
 
     def get_market_news_results(self, lookback_days: int = 2, limit: int = 50) -> list[SourceResult]:
+        cache_key = f"{lookback_days}|{limit}|market"
+        cache = getattr(self, "cache", None)
+        if cache:
+            cached = cache.load("market_news", cache_key)
+            if cached:
+                return source_results_from_dicts(cached)
         results = [
             self._fetch_source(
                 data="市场新闻/政策",
@@ -712,7 +777,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         ]
         if not any(result.items for result in results):
             fallback_results = self.fallback.get_market_news_results(lookback_days, limit)
-            return results + [
+            results = results + [
                 SourceResult(
                     data="市场新闻/政策",
                     source=result.source,
@@ -725,6 +790,11 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 )
                 for result in fallback_results
             ]
+            if cache:
+                cache.save("market_news", cache_key, results)
+            return results
+        if cache:
+            cache.save("market_news", cache_key, results)
         return results
 
     def _fetch_source(
@@ -742,7 +812,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         last_exc: Exception | None = None
         for _ in range(retries + 1):
             try:
-                items = filter_recent_items(fetch(), lookback_days)[:limit]
+                items = filter_recent_items(self._call_with_timeout(fetch), lookback_days)[:limit]
                 status = SourceStatus.SUCCESS if items else SourceStatus.MISSING
                 return SourceResult(
                     data=data,
@@ -815,5 +885,7 @@ def build_provider(provider_name: str, config: dict[str, Any] | None = None) -> 
             news_lookback_days=int(config.get("news_lookback_days", config.get("lookback_days", 2))),
             max_news_items=int(config.get("max_news_items", config.get("max_items_per_symbol", 20))),
             kline_retries=int(config.get("kline_retries", 2)),
+            timeout_seconds=float(config.get("timeout_seconds", config.get("source_timeout_seconds", 12))),
+            cache=config.get("cache"),
         )
     raise ValueError(f"unsupported data provider: {provider_name}")
