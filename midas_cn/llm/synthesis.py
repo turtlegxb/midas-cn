@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+import re
+from typing import Any
+
+from midas_cn.llm.client import LLMClient, build_llm_client, compact_llm_error
+from midas_cn.models import MarketSnapshot, NewsItem, Opportunity, SourceResult, SourceStatus
+
+
+@dataclass(frozen=True)
+class ReportSynthesis:
+    one_line_review: str
+    macro_policy_analysis: dict[str, str]
+    source_result: SourceResult
+
+
+class ReportSynthesisService:
+    def __init__(self, client: LLMClient | None = None, enabled: bool = False, temperature: float = 0.0):
+        self.client = client
+        self.enabled = enabled
+        self.temperature = temperature
+
+    def synthesize(
+        self,
+        *,
+        trade_date: str,
+        base_review: dict[str, str],
+        market: MarketSnapshot,
+        index_state: list[dict[str, str]],
+        sentiment_breadth: list[dict[str, str]],
+        theme_rotation: dict[str, Any],
+        opportunities: list[Opportunity],
+        market_news_results: list[SourceResult],
+    ) -> ReportSynthesis:
+        fallback = self._fallback_synthesis(
+            base_review=base_review,
+            market=market,
+            theme_rotation=theme_rotation,
+            market_news_results=market_news_results,
+        )
+        if not self.enabled:
+            return ReportSynthesis(
+                one_line_review=fallback["one_line_review"],
+                macro_policy_analysis=fallback["macro_policy_analysis"],
+                source_result=self._source_result(SourceStatus.MISSING, "规则复盘", "未开启大模型复盘"),
+            )
+        if self.client is None:
+            return ReportSynthesis(
+                one_line_review=fallback["one_line_review"],
+                macro_policy_analysis=fallback["macro_policy_analysis"],
+                source_result=self._source_result(SourceStatus.MISSING, "规则复盘", "未配置可用的大模型密钥"),
+            )
+
+        try:
+            response = self.client.complete(
+                self._messages(
+                    trade_date=trade_date,
+                    base_review=base_review,
+                    market=market,
+                    index_state=index_state,
+                    sentiment_breadth=sentiment_breadth,
+                    theme_rotation=theme_rotation,
+                    opportunities=opportunities,
+                    market_news_results=market_news_results,
+                ),
+                temperature=self.temperature,
+            )
+            parsed = _parse_json_object(response.content)
+            macro = _normalize_macro_analysis(parsed.get("macro_policy_analysis", {}))
+            return ReportSynthesis(
+                one_line_review=_clean_one_line(parsed.get("one_line_review")) or fallback["one_line_review"],
+                macro_policy_analysis=macro or fallback["macro_policy_analysis"],
+                source_result=self._source_result(SourceStatus.SUCCESS, f"{response.provider}:{response.model}", None),
+            )
+        except Exception as exc:
+            return ReportSynthesis(
+                one_line_review=fallback["one_line_review"],
+                macro_policy_analysis=fallback["macro_policy_analysis"],
+                source_result=self._source_result(SourceStatus.FALLBACK, "规则复盘", compact_llm_error(exc)),
+            )
+
+    def _messages(
+        self,
+        *,
+        trade_date: str,
+        base_review: dict[str, str],
+        market: MarketSnapshot,
+        index_state: list[dict[str, str]],
+        sentiment_breadth: list[dict[str, str]],
+        theme_rotation: dict[str, Any],
+        opportunities: list[Opportunity],
+        market_news_results: list[SourceResult],
+    ) -> list[dict[str, str]]:
+        context = {
+            "trade_date": trade_date,
+            "base_review": base_review,
+            "market_snapshot": {
+                "benchmark_trend": market.benchmark_trend,
+                "breadth_score": market.breadth_score,
+                "liquidity_score": market.liquidity_score,
+                "volatility_score": market.volatility_score,
+                "notes": market.notes[:5],
+            },
+            "index_state": index_state[:7],
+            "sentiment_breadth": sentiment_breadth,
+            "market_regime_score": base_review.get("market_regime_score") or {
+                "risk_label": base_review.get("risk_label"),
+                "mode": base_review.get("market_mode"),
+                "summary": base_review.get("regime_summary"),
+            },
+            "theme_rotation": theme_rotation,
+            "top_opportunities": [
+                {
+                    "symbol": item.symbol,
+                    "name": item.name,
+                    "grade": item.grade.value,
+                    "score": item.score,
+                    "sector": item.evidence.get("sector"),
+                    "pools": item.evidence.get("pools", []),
+                    "technical": item.evidence.get("technical", {}),
+                }
+                for item in opportunities[:8]
+            ],
+            "market_news": _news_digest(market_news_results),
+        }
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是A股盘后复盘和宏观政策分析师。只能基于用户提供的结构化数据分析，"
+                    "不要编造没有给出的政策、新闻或数据。输出必须是JSON对象。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "请生成中文投研报告补充内容。要求：\n"
+                    "1. one_line_review 为一句话，80字以内，包含市场状态、宽度/情绪、主线和次日执行重点。\n"
+                    "2. macro_policy_analysis 包含 summary、policy_stance、liquidity、fiscal_industry、external、market_impact、risks、next_watch 八个字段。\n"
+                    "3. 宏观及经济政策分析要连接到A股风格、指数和板块轮动，不给确定性预测。\n"
+                    "4. 每个字段只写一个自然段，不要输出标题、列表、表格、Markdown或免责声明。\n\n"
+                    f"结构化数据：{json.dumps(context, ensure_ascii=False, default=str)}"
+                ),
+            },
+        ]
+
+    def _fallback_synthesis(
+        self,
+        *,
+        base_review: dict[str, str],
+        market: MarketSnapshot,
+        theme_rotation: dict[str, Any],
+        market_news_results: list[SourceResult],
+    ) -> dict[str, Any]:
+        main_themes = "、".join(item.get("theme", "") for item in theme_rotation.get("main_themes", [])[:3] if item.get("theme"))
+        if not main_themes:
+            main_themes = "暂无清晰主线"
+        policy_titles = _news_titles(market_news_results, categories={"policy", "macro"})[:3]
+        policy_hint = "；".join(policy_titles) if policy_titles else "公开新闻源未给出强政策催化"
+        liquidity = "偏宽松" if market.liquidity_score > 0.55 else "偏紧" if market.liquidity_score < 0.4 else "中性"
+        breadth = "扩散较好" if market.breadth_score > 0.55 else "扩散不足" if market.breadth_score < 0.45 else "中性"
+        one_line = (
+            f"{base_review.get('market_mode', '震荡观察')}下市场宽度{breadth}，主线集中在{main_themes}；"
+            f"次日以指数承接、板块延续和A/B机会分时确认作为执行条件。"
+        )
+        return {
+            "one_line_review": _clean_one_line(one_line),
+            "macro_policy_analysis": {
+                "summary": f"宏观和政策线索以流动性{liquidity}、政策新闻可验证性为核心约束，当前不宜脱离指数承接单独放大仓位。",
+                "policy_stance": f"政策观察：{policy_hint}。",
+                "liquidity": f"流动性评分为{market.liquidity_score:.2f}，对高换手和题材扩散有支撑，但仍需成交额连续确认。",
+                "fiscal_industry": f"板块映射上优先观察{main_themes}是否从单日强度扩散到产业链后排。",
+                "external": "外部因素未在当前数据中形成明确方向，按扰动项处理。",
+                "market_impact": "若指数维持红盘且宽度不走弱，主题机会可继续筛选；若宽度回落，降低题材追高权重。",
+                "risks": "主要风险是政策预期落空、强势板块炸板扩散、以及资金流数据缺口导致强度误判。",
+                "next_watch": "次日重点跟踪指数开盘承接、涨停梯队、成交额变化和政策新闻是否被新增数据确认。",
+            },
+        }
+
+    def _source_result(self, status: SourceStatus, provider: str, error_message: str | None) -> SourceResult:
+        return SourceResult(
+            data="一句话复盘与宏观政策",
+            source="大模型复盘服务",
+            provider=provider,
+            status=status,
+            error_message=error_message,
+            context={},
+        )
+
+
+def build_report_synthesis_service(config: dict) -> ReportSynthesisService:
+    enabled = bool(config.get("enabled", False))
+    client = build_llm_client(config)
+    return ReportSynthesisService(client=client, enabled=enabled, temperature=float(config.get("temperature", 0.0)))
+
+
+def _parse_json_object(content: str) -> dict[str, Any]:
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", text, flags=re.S)
+        if not match:
+            raise
+        parsed = json.loads(match.group(0))
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_macro_analysis(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    fields = ["summary", "policy_stance", "liquidity", "fiscal_industry", "external", "market_impact", "risks", "next_watch"]
+    return {field: _clean_paragraph(value.get(field)) for field in fields if _clean_paragraph(value.get(field))}
+
+
+def _clean_one_line(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    return text[:120]
+
+
+def _clean_paragraph(value: object) -> str:
+    text = str(value or "").replace("|", "/")
+    parts = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            line = line.lstrip("#").strip()
+        if line.startswith(("-", "*")):
+            line = line[1:].strip()
+        parts.append(line)
+    return " ".join(parts).strip()
+
+
+def _news_digest(results: list[SourceResult]) -> list[dict[str, str]]:
+    rows = []
+    for result in results:
+        for item in result.items[:8]:
+            rows.append(
+                {
+                    "title": item.title,
+                    "source": item.source,
+                    "published_at": item.published_at or "",
+                    "category": item.category or "",
+                    "summary": item.summary or "",
+                }
+            )
+    return rows[:20]
+
+
+def _news_titles(results: list[SourceResult], categories: set[str]) -> list[str]:
+    titles = []
+    for item in (news for result in results for news in result.items):
+        if _matches_category(item, categories):
+            titles.append(item.title)
+    return titles
+
+
+def _matches_category(item: NewsItem, categories: set[str]) -> bool:
+    text = f"{item.category or ''} {item.title} {item.summary or ''}".lower()
+    return any(category in text for category in categories) or any(keyword in text for keyword in ["政策", "央行", "财政", "经济", "会议"])

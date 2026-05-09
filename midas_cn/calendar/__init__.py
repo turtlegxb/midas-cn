@@ -1,0 +1,2 @@
+"""Trading calendar checks."""
+

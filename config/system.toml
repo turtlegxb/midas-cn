@@ -1,0 +1,84 @@
+[system]
+timezone = "Asia/Shanghai"
+market = "A_SHARE"
+decision_time = "15:30"
+archive_dir = "output/decisions"
+report_archive_dir = "output/reports"
+report_days = ["monday", "tuesday", "wednesday", "thursday"]
+
+[universe]
+default_symbols = ["600519.SH", "300750.SZ", "510300.SH"]
+benchmark_symbols = ["000300.SH", "000905.SH", "000852.SH"]
+
+[data]
+provider = "akshare"
+kline_period = "daily"
+kline_adjust = "qfq"
+kline_lookback = 90
+
+[news]
+lookback_days = 2
+max_items_per_symbol = 20
+market_sources = ["eastmoney_global", "cctv"]
+security_sources = ["eastmoney_stock_news", "eastmoney_stock_notice"]
+
+[llm]
+enabled = true
+provider = "claude"
+model_name = "claude-haiku-4-5-20251001"
+base_url = "https://a.hk01.sanaecon.com"
+api_key_env = "ANTHROPIC_API_KEY"
+temperature = 0.0
+timeout_seconds = 20
+max_tokens = 4096
+
+[pools]
+enabled = true
+archive_dir = "output/pools"
+top_n = 20
+small_float_cap = 100000000000
+build_if_missing = false
+technical_limit = 40
+
+[xueqiu]
+enabled = true
+archive_dir = "output/social/xueqiu"
+cookie_env = "XUEQIU_COOKIE"
+lookback_days = 7
+max_posts_per_account = 50
+max_changes_per_portfolio = 50
+request_interval_seconds = 2
+timeout_seconds = 15
+influencers = [
+  { name = "雪球大V-8537206007", user_id = "8537206007", timeline_url_env = "XUEQIU_TIMELINE_URL_8537206007" },
+]
+portfolios = []
+
+[risk]
+max_single_position = 0.10
+max_sector_position = 0.25
+max_portfolio_gross = 0.80
+min_liquidity_score = 0.40
+default_stop_loss_pct = 0.06
+
+[decision]
+buy_threshold = 0.65
+sell_threshold = -0.45
+watch_threshold = 0.35
+
+[quality]
+allow_warn_report = true
+required_security_sections = ["technical", "fundamental", "news", "sentiment", "china_market"]
+required_technical_fields_for_a = ["trend_strength", "ma_alignment", "rsi", "volume_ratio", "support", "resistance", "ema21", "ema55"]
+
+[opportunity]
+a_threshold = 0.55
+b_threshold = 0.15
+c_threshold = 0.00
+d_threshold = -0.20
+max_warn_grade = "B"
+
+[playbook]
+warn_satellite_position = 0.05
+cash_min_pass = 0.25
+cash_min_warn = 0.35

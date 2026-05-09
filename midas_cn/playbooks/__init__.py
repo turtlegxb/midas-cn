@@ -1,0 +1,2 @@
+"""Rule-based trading playbooks."""
+
