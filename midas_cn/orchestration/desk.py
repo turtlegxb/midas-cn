@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import Callable
 
 from midas_cn.analysts.base import Analyst
 from midas_cn.calendar.a_share import AShareCalendar
@@ -22,6 +23,9 @@ from midas_cn.social import XueqiuArchive, XueqiuTracker
 from midas_cn.storage.archive import DecisionArchive
 from midas_cn.storage.report_archive import DailyReportArchive
 from midas_cn.universe.symbols import normalize_symbols
+
+
+ProgressCallback = Callable[[int, int, str], None]
 
 
 class TradingDesk:
@@ -76,8 +80,9 @@ class TradingDesk:
         symbols: list[str] | None = None,
         persist: bool = True,
         now: datetime | None = None,
+        progress: ProgressCallback | None = None,
     ) -> tuple[DecisionRun, str | None]:
-        report, paths = self.run_daily_report(symbols=symbols, persist=persist, now=now)
+        report, paths = self.run_daily_report(symbols=symbols, persist=persist, now=now, progress=progress)
         decision_run = DecisionRun(
             run_id=report.run_id,
             as_of=report.as_of,
@@ -99,20 +104,33 @@ class TradingDesk:
         symbols: list[str] | None = None,
         persist: bool = True,
         now: datetime | None = None,
+        progress: ProgressCallback | None = None,
     ) -> tuple[DailyReport, dict[str, str]]:
+        total_steps = 13
+
+        def emit(step: int, message: str) -> None:
+            if progress:
+                progress(step, total_steps, message)
+
+        emit(1, "初始化股票池与交易日历")
         universe = normalize_symbols(symbols or self.config.default_symbols)
         as_of = now or datetime.now()
         calendar = self.calendar.check(as_of)
+        emit(2, "拉取市场快照")
         market = self.provider.get_market_snapshot(self.config.benchmark_symbols)
+        emit(3, "拉取市场新闻与政策信息")
         market_news_results = self.provider.get_market_news_results(
             lookback_days=int(self.config.section("news").get("lookback_days", 2)),
             limit=50,
         )
+        emit(4, "拉取核心标的上下文")
         securities = [self.provider.get_security_context(symbol) for symbol in universe]
+        emit(5, "执行数据质量检查")
         quality_gate = self.quality_gate.evaluate(market, securities)
         opportunities = []
         decisions = []
 
+        emit(6, "运行分析师与机会扫描")
         for security in securities:
             views = [analyst.evaluate(security, market) for analyst in self.analysts]
             risk_plan = self.risk_engine.plan(security, market)
@@ -120,10 +138,14 @@ class TradingDesk:
             opportunities.append(opportunity)
             decisions.append(self.decision_engine.decide_from_opportunity(opportunity, views, risk_plan))
 
+        emit(7, "生成仓位与风控方案")
         position_plan = self.position_playbook.build(opportunities, quality_gate)
         pool_trade_date = calendar.trade_date.replace("-", "") if calendar.is_trading_day else latest_report_trade_date(as_of.date())
+        emit(8, "构建或读取选股池")
         stock_pools = self._load_or_build_stock_pools(pool_trade_date, persist)
+        emit(9, "拉取雪球跟踪数据")
         xueqiu_snapshot = self._load_or_fetch_xueqiu(pool_trade_date, persist)
+        emit(10, "计算选股池技术指标")
         pool_technical_profiles = self._build_pool_technical_profiles(stock_pools)
         report_opportunities, _ = self.report_builder.rank_report_opportunities(
             opportunities,
@@ -131,8 +153,11 @@ class TradingDesk:
             stock_pools,
             pool_technical_profiles,
         )
+        emit(11, "补充个股最新新闻")
         opportunity_news_results = self._fetch_opportunity_news(report_opportunities)
+        emit(12, "计算指数技术状态")
         index_profiles = self._build_index_profiles()
+        emit(13, "组装并保存中文报告")
         report = self.report_builder.build(
             run_id=as_of.strftime("%Y%m%d_%H%M%S"),
             as_of=as_of,

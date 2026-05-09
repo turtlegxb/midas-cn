@@ -28,6 +28,8 @@ midas_cn/
 python3 -m midas_cn.interfaces.cli --symbols 600519.SH 300750.SZ
 ```
 
+生成报告时 CLI 会在终端输出中文进度条和当前步骤说明；如需静默运行，可追加 `--quiet`。
+
 默认使用 mock 数据源，可在无 API key 的环境里验证流程。后续接入真实行情、财务、公告、新闻和交易接口时，只需要实现 `midas_cn.data.providers.MarketDataProvider`。
 
 ### K 线数据源
