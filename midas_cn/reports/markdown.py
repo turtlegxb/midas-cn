@@ -199,6 +199,22 @@ class MarkdownReportRenderer:
             "",
         ])
         lines.extend(f"- {item}" for item in report.risk_warnings)
+        source_health = report.metadata.get("source_health", [])
+        if source_health:
+            lines.extend([
+                "",
+                "## 数据源健康面板",
+                "",
+                "| 数据类型 | 来源 | 成功 | 回退 | 失败 | 部分 | 缺失 | 条目 | 最近错误 |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            ])
+            for item in source_health:
+                error = error_label(str(item.get("last_error") or ""))[:80].replace("|", "/")
+                lines.append(
+                    f"| {item.get('data')} | {source_label(item.get('source'))} | {item.get('success', 0)} | "
+                    f"{item.get('fallback', 0)} | {item.get('failed', 0)} | {item.get('partial', 0)} | "
+                    f"{item.get('missing', 0)} | {item.get('items', 0)} | {error} |"
+                )
         lines.extend([
             "",
             "## 数据来源声明",
@@ -388,19 +404,52 @@ def theme_row(item: dict) -> str:
 def opportunity_card(item) -> list[str]:
     pools = "、".join(item.evidence.get("pools", [])) or "选股池"
     technical = technical_brief(item.evidence.get("technical", {}), item.evidence.get("technical_score"))
+    score_breakdown = score_breakdown_text(item.evidence.get("score_breakdown", {}), item.score)
+    downgrade_reasons = item.evidence.get("downgrade_reasons") or []
     rows = [
         "",
         f"**{item.symbol} {item.name}｜{item.grade.value}｜{item.score:.3f}**",
         f"- 板块：{item.evidence.get('sector') or '未分类'}",
         f"- 入选：{pools}",
+        f"- 评分：{score_breakdown}",
+        *([f"- 降级原因：{'；'.join(downgrade_reasons)}"] if downgrade_reasons else []),
         "- 最新新闻：",
         *latest_news_lines(item.evidence.get("news_items", []), limit=3),
+        *opportunity_news_insight_lines(item.evidence),
         f"- 技术：{technical}",
         f"- 触发：{strip_pool_prefix(item.trigger)}",
         f"- 失效：{item.invalidation}",
         f"- 动作：{item.action}",
     ]
     return rows
+
+
+def opportunity_news_insight_lines(evidence: dict) -> list[str]:
+    summary = clean_markdown_field(evidence.get("news_summary") or "")
+    if not summary:
+        return []
+    risk_label = clean_markdown_field(evidence.get("news_risk_label") or "信息不足")
+    signal_label = {
+        "positive": "偏正面",
+        "neutral": "中性",
+        "negative": "偏负面",
+    }.get(str(evidence.get("news_signal") or "neutral"), "中性")
+    return [f"- 新闻解读：{summary}（风险：{risk_label}，信号：{signal_label}）"]
+
+
+def score_breakdown_text(breakdown: dict, fallback_score: float) -> str:
+    if not breakdown:
+        return f"总分{fallback_score:.3f}"
+    pool_score = float(breakdown.get("pool_score") or 0)
+    technical_score = float(breakdown.get("technical_score") or 0)
+    news_score = float(breakdown.get("news_score") or 0)
+    final_score = float(breakdown.get("final_score") or fallback_score)
+    contributions = breakdown.get("pool_contributions") or []
+    contribution_text = "，".join(
+        f"{item.get('pool')} {float(item.get('score') or 0):+.3f}" for item in contributions[:4]
+    )
+    suffix = f"；池贡献：{contribution_text}" if contribution_text else ""
+    return f"总分{final_score:.3f}（选股池{pool_score:+.3f}，技术{technical_score:+.3f}，新闻{news_score:+.3f}）{suffix}"
 
 
 def strip_pool_prefix(text: str) -> str:

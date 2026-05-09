@@ -37,6 +37,7 @@ api_key_env = "ANTHROPIC_API_KEY"
 temperature = 0.0
 timeout_seconds = 20
 max_tokens = 4096
+opportunity_news_enabled = true
 
 [pools]
 enabled = true

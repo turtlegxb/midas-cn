@@ -3,7 +3,7 @@ from datetime import datetime
 
 from midas_cn.llm.client import LLMResponse
 from midas_cn.llm.synthesis import ReportSynthesisService
-from midas_cn.models import MarketSnapshot, SourceResult, SourceStatus
+from midas_cn.models import NewsItem, MarketSnapshot, Opportunity, OpportunityGrade, SourceResult, SourceStatus
 from midas_cn.reports.markdown import clean_markdown_field
 
 
@@ -26,6 +26,21 @@ class FakeClient:
                 '"market_impact":"有利于主题扩散但不支持无条件追高。",'
                 '"risks":"政策预期落空和炸板扩散。",'
                 '"next_watch":"跟踪指数承接、涨停梯队和新增政策新闻。"}}'
+            ),
+        )
+
+
+class FakeNewsClient:
+    provider = "openai"
+    model = "test-model"
+
+    def complete(self, messages, *, temperature=0.2):
+        return LLMResponse(
+            provider=self.provider,
+            model=self.model,
+            content=(
+                '{"items":[{"symbol":"300001.SZ","news_summary":"公告催化偏正面，但仍需成交承接确认。",'
+                '"news_risk_label":"无明显风险","news_signal":"positive"}]}'
             ),
         )
 
@@ -83,6 +98,34 @@ class LLMSynthesisTest(unittest.TestCase):
         self.assertEqual(result.source_result.status, SourceStatus.MISSING)
         self.assertIn("宽度扩散不足", result.one_line_review)
         self.assertTrue(result.macro_policy_analysis["summary"])
+
+    def test_opportunity_news_synthesis_attaches_llm_insight(self):
+        service = ReportSynthesisService(client=FakeNewsClient(), enabled=True, opportunity_news_enabled=True)
+        opportunity = Opportunity(
+            symbol="300001.SZ",
+            name="样本科技",
+            grade=OpportunityGrade.B,
+            score=0.6,
+            trigger="触发",
+            invalidation="失效",
+            action="动作",
+            evidence={
+                "news_items": [
+                    NewsItem(
+                        title="关于重大合同中标的公告",
+                        source="eastmoney_stock_notice",
+                        category="announcement",
+                    ).__dict__
+                ]
+            },
+        )
+
+        opportunities, source_result = service.synthesize_opportunity_news([opportunity])
+
+        self.assertEqual(source_result.status, SourceStatus.SUCCESS)
+        self.assertEqual(opportunities[0].evidence["news_risk_label"], "无明显风险")
+        self.assertEqual(opportunities[0].evidence["news_signal"], "positive")
+        self.assertTrue(any(item["data"] == "个股新闻解读" for item in opportunities[0].evidence["source_results"]))
 
     def test_macro_markdown_field_is_cleaned(self):
         self.assertEqual(

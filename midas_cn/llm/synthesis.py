@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any
 
+from midas_cn.data.news import source_results_to_dicts
 from midas_cn.llm.client import LLMClient, build_llm_client, compact_llm_error
 from midas_cn.models import MarketSnapshot, NewsItem, Opportunity, SourceResult, SourceStatus
 
@@ -17,10 +18,17 @@ class ReportSynthesis:
 
 
 class ReportSynthesisService:
-    def __init__(self, client: LLMClient | None = None, enabled: bool = False, temperature: float = 0.0):
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        enabled: bool = False,
+        temperature: float = 0.0,
+        opportunity_news_enabled: bool = True,
+    ):
         self.client = client
         self.enabled = enabled
         self.temperature = temperature
+        self.opportunity_news_enabled = opportunity_news_enabled
 
     def synthesize(
         self,
@@ -189,11 +197,99 @@ class ReportSynthesisService:
             context={},
         )
 
+    def synthesize_opportunity_news(self, opportunities: list[Opportunity]) -> tuple[list[Opportunity], SourceResult]:
+        fallback_source = self._opportunity_news_source_result(SourceStatus.MISSING, "规则新闻解读", "未开启大模型个股新闻解读")
+        eligible = [item for item in opportunities if item.evidence.get("news_items")]
+        if not eligible:
+            return opportunities, self._opportunity_news_source_result(SourceStatus.MISSING, "规则新闻解读", "没有可解读的个股新闻")
+        if not self.enabled or not self.opportunity_news_enabled:
+            return opportunities, fallback_source
+        if self.client is None:
+            return opportunities, self._opportunity_news_source_result(SourceStatus.MISSING, "规则新闻解读", "未配置可用的大模型密钥")
+
+        try:
+            response = self.client.complete(self._opportunity_news_messages(eligible), temperature=self.temperature)
+            parsed = _parse_json_object(response.content)
+            insights = _normalize_opportunity_news_insights(parsed.get("items"))
+            if not insights:
+                raise ValueError("模型未返回有效个股新闻解读")
+            return (
+                _attach_opportunity_news_insights(opportunities, insights, response.provider, response.model),
+                self._opportunity_news_source_result(SourceStatus.SUCCESS, f"{response.provider}:{response.model}", None),
+            )
+        except Exception as exc:
+            return (
+                opportunities,
+                self._opportunity_news_source_result(SourceStatus.FALLBACK, "规则新闻解读", compact_llm_error(exc)),
+            )
+
+    def _opportunity_news_messages(self, opportunities: list[Opportunity]) -> list[dict[str, str]]:
+        context = {
+            "opportunities": [
+                {
+                    "symbol": item.symbol,
+                    "name": item.name,
+                    "grade": item.grade.value,
+                    "score": item.score,
+                    "sector": item.evidence.get("sector"),
+                    "pools": item.evidence.get("pools", []),
+                    "technical": item.evidence.get("technical", {}),
+                    "news": [
+                        {
+                            "title": news.get("title"),
+                            "summary": news.get("summary"),
+                            "source": news.get("source"),
+                            "published_at": news.get("published_at"),
+                            "category": news.get("category"),
+                        }
+                        for news in list(item.evidence.get("news_items") or [])[:3]
+                    ],
+                }
+                for item in opportunities[:10]
+            ]
+        }
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是A股个股新闻解读助手。只能基于用户提供的新闻标题、摘要和结构化数据判断，"
+                    "不要编造新闻、财务数据、研报观点或确定性预测。输出必须是JSON对象。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "请为每只股票生成新闻解读。要求：\n"
+                    "1. 返回 items 数组，每项包含 symbol、news_summary、news_risk_label、news_signal 四个字段。\n"
+                    "2. news_summary 一句话，60字以内，说明催化、风险或信息不足。\n"
+                    "3. news_risk_label 只能是：无明显风险、关注风险、明显风险、信息不足。\n"
+                    "4. news_signal 只能是：positive、neutral、negative。\n"
+                    "5. 不要输出Markdown、列表、免责声明或多余字段。\n\n"
+                    f"结构化数据：{json.dumps(context, ensure_ascii=False, default=str)}"
+                ),
+            },
+        ]
+
+    def _opportunity_news_source_result(self, status: SourceStatus, provider: str, error_message: str | None) -> SourceResult:
+        return SourceResult(
+            data="个股新闻解读",
+            source="大模型新闻解读服务",
+            provider=provider,
+            status=status,
+            error_message=error_message,
+            context={},
+        )
+
 
 def build_report_synthesis_service(config: dict) -> ReportSynthesisService:
     enabled = bool(config.get("enabled", False))
     client = build_llm_client(config)
-    return ReportSynthesisService(client=client, enabled=enabled, temperature=float(config.get("temperature", 0.0)))
+    return ReportSynthesisService(
+        client=client,
+        enabled=enabled,
+        temperature=float(config.get("temperature", 0.0)),
+        opportunity_news_enabled=bool(config.get("opportunity_news_enabled", True)),
+    )
 
 
 def _parse_json_object(content: str) -> dict[str, Any]:
@@ -236,6 +332,70 @@ def _clean_paragraph(value: object) -> str:
             line = line[1:].strip()
         parts.append(line)
     return " ".join(parts).strip()
+
+
+def _normalize_opportunity_news_insights(value: object) -> dict[str, dict[str, str]]:
+    if not isinstance(value, list):
+        return {}
+    rows: dict[str, dict[str, str]] = {}
+    valid_risks = {"无明显风险", "关注风险", "明显风险", "信息不足"}
+    valid_signals = {"positive", "neutral", "negative"}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        risk_label = _clean_paragraph(item.get("news_risk_label")) or "信息不足"
+        signal = str(item.get("news_signal") or "neutral").strip().lower()
+        rows[symbol] = {
+            "news_summary": _clean_one_line(item.get("news_summary"))[:80],
+            "news_risk_label": risk_label if risk_label in valid_risks else "信息不足",
+            "news_signal": signal if signal in valid_signals else "neutral",
+        }
+    return rows
+
+
+def _attach_opportunity_news_insights(
+    opportunities: list[Opportunity],
+    insights: dict[str, dict[str, str]],
+    provider: str,
+    model: str,
+) -> list[Opportunity]:
+    updated = []
+    for item in opportunities:
+        insight = insights.get(item.symbol)
+        if not insight:
+            updated.append(item)
+            continue
+        source_result = SourceResult(
+            data="个股新闻解读",
+            source="大模型新闻解读服务",
+            provider=f"{provider}:{model}",
+            status=SourceStatus.SUCCESS,
+            error_message=None,
+            context={"symbol": item.symbol},
+        )
+        evidence = {
+            **item.evidence,
+            **insight,
+            "llm_news_source_status": {"大模型新闻解读服务": SourceStatus.SUCCESS.value},
+            "source_results": list(item.evidence.get("source_results") or []) + source_results_to_dicts([source_result]),
+        }
+        updated.append(
+            Opportunity(
+                symbol=item.symbol,
+                name=item.name,
+                grade=item.grade,
+                score=item.score,
+                trigger=item.trigger,
+                invalidation=item.invalidation,
+                action=item.action,
+                risk_flags=item.risk_flags,
+                evidence=evidence,
+            )
+        )
+    return updated
 
 
 def _news_digest(results: list[SourceResult]) -> list[dict[str, str]]:

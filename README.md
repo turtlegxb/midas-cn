@@ -30,6 +30,15 @@ python3 -m midas_cn.interfaces.cli --symbols 600519.SH 300750.SZ
 
 生成报告时 CLI 会在终端输出中文进度条和当前步骤说明；如需静默运行，可追加 `--quiet`。
 
+查看本地缓存状态：
+
+```bash
+python3 -m midas_cn.interfaces.cli cache status
+python3 -m midas_cn.interfaces.cli cache clear --target K线
+python3 -m midas_cn.interfaces.cli sources check --symbol 600519.SH
+python3 -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --symbols 600519.SH
+```
+
 默认使用 mock 数据源，可在无 API key 的环境里验证流程。后续接入真实行情、财务、公告、新闻和交易接口时，只需要实现 `midas_cn.data.providers.MarketDataProvider`。
 
 ### K 线数据源
@@ -57,6 +66,10 @@ timeout_seconds = 12
 
 [news]
 opportunity_news_sort = "hybrid"
+
+[llm]
+enabled = true
+opportunity_news_enabled = true
 
 [pools]
 build_if_missing = true

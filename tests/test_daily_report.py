@@ -4,7 +4,17 @@ from tempfile import TemporaryDirectory
 from pathlib import Path
 
 from midas_cn.config import load_config
-from midas_cn.models import OpportunityGrade, QualityGate, QualityStatus, SourceStatus, StockPool, StockPoolEntry
+from midas_cn.models import (
+    NewsItem,
+    Opportunity,
+    OpportunityGrade,
+    QualityGate,
+    QualityStatus,
+    SourceResult,
+    SourceStatus,
+    StockPool,
+    StockPoolEntry,
+)
 from midas_cn.orchestration.factory import build_trading_desk
 from midas_cn.pools.storage import StockPoolArchive
 from midas_cn.reports.builder import DailyReportBuilder
@@ -72,6 +82,83 @@ class DailyReportTest(unittest.TestCase):
         sorted_items = builder._sort_news_items(items)
 
         self.assertEqual(sorted_items[0]["title"], "关于重大合同中标的公告")
+
+    def test_opportunity_news_score_and_downgrade_are_applied(self):
+        builder = DailyReportBuilder(opportunity_news_sort="hybrid")
+        opportunity = Opportunity(
+            symbol="300001.SZ",
+            name="样本科技",
+            grade=OpportunityGrade.A,
+            score=0.74,
+            trigger="命中选股池：当日涨停；技术面偏强。",
+            invalidation="跌破支撑位。",
+            action="进入优先跟踪。",
+            risk_flags=[],
+            evidence={
+                "pools": ["当日涨停"],
+                "sector": "软件",
+                "pool_score": 0.70,
+                "technical_score": 0.04,
+                "technical": {"rsi": 61},
+                "score_breakdown": {
+                    "pool_score": 0.70,
+                    "technical_score": 0.04,
+                    "final_score": 0.74,
+                },
+            },
+        )
+        news_result = SourceResult(
+            data="个股新闻/公告",
+            source="eastmoney_stock_notice",
+            provider="test",
+            status=SourceStatus.SUCCESS,
+            items=[
+                NewsItem(
+                    title="关于重大合同中标的公告",
+                    source="eastmoney_stock_notice",
+                    published_at="2026-05-09 18:00:00",
+                    url="https://example.com/notice",
+                    category="announcement",
+                )
+            ],
+        )
+
+        updated = builder._attach_opportunity_news([opportunity], {"300001.SZ": [news_result]})[0]
+
+        self.assertEqual(updated.grade, OpportunityGrade.B)
+        self.assertGreater(updated.evidence["score_breakdown"]["news_score"], 0)
+        self.assertGreater(updated.score, opportunity.score)
+        self.assertIn("A类需要至少两个选股池共振", updated.evidence["downgrade_reasons"])
+
+    def test_opportunity_downgrade_runs_without_news_results(self):
+        builder = DailyReportBuilder()
+        opportunity = Opportunity(
+            symbol="300002.SZ",
+            name="样本高位",
+            grade=OpportunityGrade.A,
+            score=0.78,
+            trigger="命中选股池：主力净额流入、当日涨停；技术面偏强。",
+            invalidation="跌破支撑位。",
+            action="进入优先跟踪。",
+            risk_flags=[],
+            evidence={
+                "pools": ["主力净额流入top20", "当日涨停"],
+                "pool_score": 0.73,
+                "technical_score": 0.05,
+                "technical": {"rsi": 88},
+                "score_breakdown": {
+                    "pool_score": 0.73,
+                    "technical_score": 0.05,
+                    "final_score": 0.78,
+                },
+            },
+        )
+
+        updated = builder._attach_opportunity_news([opportunity], {})[0]
+
+        self.assertEqual(updated.grade, OpportunityGrade.B)
+        self.assertEqual(updated.evidence["score_breakdown"]["news_score"], 0)
+        self.assertIn("RSI过热，不给A类", updated.evidence["downgrade_reasons"])
 
     def test_daily_report_builds_phase_one_sections(self):
         config = load_config("config/system.toml")
@@ -157,6 +244,8 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(report.metadata["technical_coverage"]["success"], 1)
         self.assertIn("技术面", report.opportunities[0].trigger)
         self.assertIn("technical_score", report.opportunities[0].evidence)
+        self.assertIn("score_breakdown", report.opportunities[0].evidence)
+        self.assertIn("source_health", report.metadata)
         self.assertEqual(report.opportunities[0].evidence["sector"], "软件")
         self.assertTrue(report.opportunities[0].evidence["news_items"])
         self.assertTrue(report.opportunities[0].evidence["technical"])
@@ -170,11 +259,13 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("大模型复盘服务", rendered)
         self.assertIn("软件", rendered)
         self.assertIn("- 板块：软件", rendered)
+        self.assertIn("- 评分：总分", rendered)
         self.assertIn("- 最新新闻：", rendered)
         self.assertNotIn("- 最新新闻：暂无", rendered)
         self.assertIn("  - [300001.SZ", rendered)
         self.assertIn("](https://example.com/300001.SZ/", rendered)
         self.assertIn("使用回退源", rendered)
+        self.assertIn("数据源健康面板", rendered)
         self.assertIn("东方财富涨停池", rendered)
         self.assertNotIn("akshare.", rendered)
         self.assertNotIn("sina.Market", rendered)

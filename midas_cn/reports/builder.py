@@ -37,6 +37,18 @@ def format_turnover(amount: float | None, volume: float | None) -> str:
     return "待接指数K线"
 
 
+GRADE_ORDER = {
+    OpportunityGrade.A: 4,
+    OpportunityGrade.B: 3,
+    OpportunityGrade.C: 2,
+    OpportunityGrade.D: 1,
+}
+
+
+def min_grade(left: OpportunityGrade, right: OpportunityGrade) -> OpportunityGrade:
+    return left if GRADE_ORDER[left] <= GRADE_ORDER[right] else right
+
+
 class DailyReportBuilder:
     def __init__(self, llm_synthesis: ReportSynthesisService | None = None, opportunity_news_sort: str = "hybrid"):
         self.llm_synthesis = llm_synthesis or ReportSynthesisService()
@@ -87,7 +99,19 @@ class DailyReportBuilder:
             stock_pools,
             technical_profiles,
         )
-        report_opportunities = self._attach_opportunity_news(report_opportunities, opportunity_news_results or {})
+        rescored_opportunities = self._attach_opportunity_news(report_opportunities, opportunity_news_results or {})
+        visible_opportunities = sorted(
+            [item for item in rescored_opportunities if item.grade in {OpportunityGrade.A, OpportunityGrade.B}],
+            key=lambda item: item.score,
+            reverse=True,
+        )
+        hidden_opportunities = (
+            hidden_opportunities
+            + [item for item in rescored_opportunities if item.grade not in {OpportunityGrade.A, OpportunityGrade.B}]
+            + visible_opportunities[10:]
+        )
+        report_opportunities = visible_opportunities[:10]
+        report_opportunities, opportunity_news_synthesis_result = self.llm_synthesis.synthesize_opportunity_news(report_opportunities)
         grade_counts = Counter(item.grade.value for item in report_opportunities)
         hidden_count = len(hidden_opportunities)
         overall_review = self._overall_review(market, report_opportunities, quality_gate)
@@ -152,6 +176,7 @@ class DailyReportBuilder:
                 stock_pools or [],
                 synthesis.source_result,
                 getattr(xueqiu_snapshot, "source_result", None),
+                opportunity_news_synthesis_result,
             ),
             decisions=decisions,
             metadata={
@@ -162,6 +187,15 @@ class DailyReportBuilder:
                     stock_pools or [],
                     synthesis.source_result,
                     getattr(xueqiu_snapshot, "source_result", None),
+                    opportunity_news_synthesis_result,
+                ),
+                "source_health": self._source_health(
+                    opportunities,
+                    market_news_results or [],
+                    stock_pools or [],
+                    synthesis.source_result,
+                    getattr(xueqiu_snapshot, "source_result", None),
+                    opportunity_news_synthesis_result,
                 ),
                 "overall_review": overall_review,
                 "index_state": index_state,
@@ -175,6 +209,11 @@ class DailyReportBuilder:
                     "status": synthesis.source_result.status.value,
                     "provider": synthesis.source_result.provider,
                     "error_message": synthesis.source_result.error_message,
+                },
+                "llm_opportunity_news": {
+                    "status": opportunity_news_synthesis_result.status.value,
+                    "provider": opportunity_news_synthesis_result.provider,
+                    "error_message": opportunity_news_synthesis_result.error_message,
                 },
                 "technical_coverage": self._technical_coverage(technical_profiles or {}),
                 "hidden_opportunities": {
@@ -196,27 +235,44 @@ class DailyReportBuilder:
         updated = []
         for opportunity in opportunities:
             news_results = news_results_by_symbol.get(opportunity.symbol, [])
-            if not news_results:
-                updated.append(opportunity)
-                continue
             news_items = [
                 item.__dict__
                 for result in news_results
                 for item in result.items
             ]
             news_items = self._sort_news_items(news_items)[:10]
+            score_breakdown = dict(opportunity.evidence.get("score_breakdown") or {})
+            news_score = self._opportunity_news_score(news_items)
+            pool_score = float(score_breakdown.get("pool_score") or opportunity.evidence.get("pool_score") or 0)
+            technical_score = float(score_breakdown.get("technical_score") or opportunity.evidence.get("technical_score") or 0)
+            final_score = round(max(-1.0, min(1.0, pool_score + technical_score + news_score)), 3)
+            grade = self._grade_for_score(final_score)
+            grade, downgrade_reasons = self._apply_opportunity_downgrades(
+                grade,
+                {**opportunity.evidence, "risk_flags": opportunity.risk_flags},
+                news_items,
+                technical_score,
+            )
+            score_breakdown = {
+                **score_breakdown,
+                "news_score": round(news_score, 3),
+                "final_score": final_score,
+            }
             evidence = {
                 **opportunity.evidence,
                 "news_items": news_items,
                 "news_source_status": self._merge_source_status([{result.source: result.status.value} for result in news_results]),
                 "source_results": source_results_to_dicts(news_results),
+                "score_breakdown": score_breakdown,
+                "news_score": round(news_score, 3),
+                "downgrade_reasons": downgrade_reasons,
             }
             updated.append(
                 Opportunity(
                     symbol=opportunity.symbol,
                     name=opportunity.name,
-                    grade=opportunity.grade,
-                    score=opportunity.score,
+                    grade=grade,
+                    score=final_score,
                     trigger=opportunity.trigger,
                     invalidation=opportunity.invalidation,
                     action=opportunity.action,
@@ -225,6 +281,44 @@ class DailyReportBuilder:
                 )
             )
         return updated
+
+    def _grade_for_score(self, score: float) -> OpportunityGrade:
+        if score >= 0.72:
+            return OpportunityGrade.A
+        if score >= 0.36:
+            return OpportunityGrade.B
+        if score >= 0.08:
+            return OpportunityGrade.C
+        return OpportunityGrade.D
+
+    def _apply_opportunity_downgrades(
+        self,
+        grade: OpportunityGrade,
+        evidence: dict,
+        news_items: list[dict],
+        technical_score: float,
+    ) -> tuple[OpportunityGrade, list[str]]:
+        reasons = []
+        max_grade = grade
+        pools = list(evidence.get("pools") or [])
+        technical = dict(evidence.get("technical") or {})
+        rsi = float(technical.get("rsi") or 50)
+        if len(pools) < 2 and grade == OpportunityGrade.A:
+            max_grade = min_grade(max_grade, OpportunityGrade.B)
+            reasons.append("A类需要至少两个选股池共振")
+        if technical_score < 0 and grade == OpportunityGrade.A:
+            max_grade = min_grade(max_grade, OpportunityGrade.B)
+            reasons.append("技术分为负，不给A类")
+        if rsi >= 85 and grade == OpportunityGrade.A:
+            max_grade = min_grade(max_grade, OpportunityGrade.B)
+            reasons.append("RSI过热，不给A类")
+        if "当日跌停" in evidence.get("risk_flags", []):
+            max_grade = min_grade(max_grade, OpportunityGrade.C)
+            reasons.append("命中跌停风险")
+        if self._news_risk_score(news_items) < 0:
+            max_grade = min_grade(max_grade, OpportunityGrade.B)
+            reasons.append("新闻含监管、问询、立案、减持等风险词")
+        return max_grade, reasons
 
     def _sort_news_items(self, items: list[dict]) -> list[dict]:
         strategy = self.opportunity_news_sort
@@ -281,6 +375,29 @@ class DailyReportBuilder:
         text = f"{item.get('title') or ''} {item.get('summary') or ''}"
         keywords = ("业绩", "订单", "中标", "合同", "回购", "增持", "减持", "监管", "问询", "政策", "涨停", "板块")
         return sum(1 for keyword in keywords if keyword in text)
+
+    def _opportunity_news_score(self, items: list[dict]) -> float:
+        if not items:
+            return 0.0
+        positive = 0.0
+        negative = 0.0
+        for item in items[:5]:
+            text = f"{item.get('title') or ''} {item.get('summary') or ''}"
+            if item.get("category") == "announcement" or "notice" in str(item.get("source") or ""):
+                positive += 0.012
+            if any(keyword in text for keyword in ("重大合同", "中标", "业绩预增", "回购", "增持", "政策支持")):
+                positive += 0.035
+            elif any(keyword in text for keyword in ("业绩", "订单", "政策", "涨停", "突破")):
+                positive += 0.018
+            if any(keyword in text for keyword in ("监管", "问询", "立案", "处罚", "减持", "亏损", "终止")):
+                negative -= 0.055
+        return max(-0.12, min(0.10, positive + negative))
+
+    def _news_risk_score(self, items: list[dict]) -> float:
+        if not items:
+            return 0.0
+        text = " ".join(f"{item.get('title') or ''} {item.get('summary') or ''}" for item in items[:5])
+        return -1.0 if any(keyword in text for keyword in ("监管", "问询", "立案", "处罚", "减持", "亏损", "终止")) else 0.0
 
     def _market_mode(self, market: MarketSnapshot) -> str:
         if market.benchmark_trend > 0.15 and market.breadth_score > 0.55:
@@ -612,9 +729,13 @@ class DailyReportBuilder:
         stock_pools: list[StockPool],
         llm_result: SourceResult | None = None,
         xueqiu_result: SourceResult | None = None,
+        opportunity_news_llm_result: SourceResult | None = None,
     ) -> list[dict[str, str]]:
         security_news_status = self._merge_source_status(
             item.evidence.get("news_source_status", {}) for item in opportunities
+        )
+        llm_news_status = self._merge_source_status(
+            item.evidence.get("llm_news_source_status", {}) for item in opportunities
         )
         market_news_status = {result.source: result.status.value for result in market_news_results}
         kline_status = self._kline_status(opportunities)
@@ -631,6 +752,10 @@ class DailyReportBuilder:
             for source, status in sorted(security_news_status.items())
         )
         rows.extend(
+            {"data": "个股新闻解读", "source": source, "status": status}
+            for source, status in sorted(llm_news_status.items())
+        )
+        rows.extend(
             {"data": "市场新闻/政策", "source": source, "status": status}
             for source, status in sorted(market_news_status.items())
         )
@@ -642,6 +767,14 @@ class DailyReportBuilder:
             rows.append({"data": llm_result.data, "source": llm_result.source, "status": llm_result.status.value})
         if xueqiu_result:
             rows.append({"data": xueqiu_result.data, "source": xueqiu_result.source, "status": xueqiu_result.status.value})
+        if opportunity_news_llm_result and not llm_news_status:
+            rows.append(
+                {
+                    "data": opportunity_news_llm_result.data,
+                    "source": opportunity_news_llm_result.source,
+                    "status": opportunity_news_llm_result.status.value,
+                }
+            )
         if not security_news_status:
             rows.append({"data": "个股新闻/公告", "source": "未获取", "status": "missing"})
         if not market_news_status:
@@ -687,6 +820,7 @@ class DailyReportBuilder:
         stock_pools: list[StockPool],
         llm_result: SourceResult | None = None,
         xueqiu_result: SourceResult | None = None,
+        opportunity_news_llm_result: SourceResult | None = None,
     ) -> list[dict]:
         security_results: list[dict] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -717,7 +851,54 @@ class DailyReportBuilder:
             results.extend(source_results_to_dicts([llm_result]))
         if xueqiu_result:
             results.extend(source_results_to_dicts([xueqiu_result]))
+        has_symbol_news_llm = any(result.get("data") == "个股新闻解读" for result in security_results)
+        if opportunity_news_llm_result and not has_symbol_news_llm:
+            results.extend(source_results_to_dicts([opportunity_news_llm_result]))
         return results
+
+    def _source_health(
+        self,
+        opportunities: list[Opportunity],
+        market_news_results: list[SourceResult],
+        stock_pools: list[StockPool],
+        llm_result: SourceResult | None = None,
+        xueqiu_result: SourceResult | None = None,
+        opportunity_news_llm_result: SourceResult | None = None,
+    ) -> list[dict]:
+        results = self._source_results(
+            opportunities,
+            market_news_results,
+            stock_pools,
+            llm_result,
+            xueqiu_result,
+            opportunity_news_llm_result,
+        )
+        grouped: dict[tuple[str, str], dict] = {}
+        for result in results:
+            key = (str(result.get("data") or ""), str(result.get("source") or ""))
+            item = grouped.setdefault(
+                key,
+                {
+                    "data": key[0],
+                    "source": key[1],
+                    "success": 0,
+                    "fallback": 0,
+                    "failed": 0,
+                    "partial": 0,
+                    "missing": 0,
+                    "items": 0,
+                    "last_error": "",
+                },
+            )
+            status = str(result.get("status") or "missing")
+            if status in item:
+                item[status] += 1
+            else:
+                item["missing"] += 1
+            item["items"] += int(result.get("item_count") or len(result.get("items") or []))
+            if result.get("error_message"):
+                item["last_error"] = str(result.get("error_message"))
+        return sorted(grouped.values(), key=lambda item: (item["data"], item["source"]))
 
     def _stock_pool_source_results(self, stock_pools: list[StockPool]) -> list[dict]:
         return [
@@ -1129,6 +1310,15 @@ class DailyReportBuilder:
                 "metrics": item["metrics"],
                 "pool_score": round(item["score"], 3),
                 "technical_score": round(technical_score, 3),
+                "score_breakdown": {
+                    "pool_score": round(item["score"], 3),
+                    "technical_score": round(technical_score, 3),
+                    "final_score": score,
+                    "pool_contributions": [
+                        {"pool": self._pool_display_name(pool_name), "score": round(contribution, 3)}
+                        for pool_name, contribution in zip(item["pools"], item["pool_contributions"])
+                    ],
+                },
                 "technical": technical,
                 "technical_status": technical_result.get("status"),
                 "technical_error": technical_result.get("error_message"),
