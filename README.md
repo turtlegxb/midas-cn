@@ -37,7 +37,7 @@ python3 -m midas_cn.interfaces.cli cache status
 python3 -m midas_cn.interfaces.cli cache clear --target K线
 python3 -m midas_cn.interfaces.cli sources check --symbol 600519.SH
 python3 -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --symbols 600519.SH
-python3 scripts/build_ths_sector_cache.py --quiet
+python3 scripts/build_ths_sector_cache.py --pool-date 20260508 --skip-board-lists --quiet
 ```
 
 默认使用 mock 数据源，可在无 API key 的环境里验证流程。后续接入真实行情、财务、公告、新闻和交易接口时，只需要实现 `midas_cn.data.providers.MarketDataProvider`。
@@ -90,7 +90,7 @@ max_concepts = 390
 request_interval_seconds = 0.2
 ```
 
-同花顺行业/概念缓存建议由 cron 在报告前刷新，示例见 `config/crontab.example`。正式报告会优先读取该缓存补齐个股行业和概念；缓存缺失时再使用行情快照、巨潮和东方财富的有限兜底。
+同花顺行业/概念缓存建议由 cron 在报告前刷新，示例见 `config/crontab.example`。当前未接 iFinD 官方 API 时，脚本按 `--symbols` 或 `--pool-date` 中的股票逐只抓同花顺 F10 题材接口，并用已有行业源兜底；正式报告会优先读取该缓存补齐个股行业和概念，缓存缺失时再使用行情快照、巨潮和东方财富的有限兜底。
 
 带归档运行会同时生成：
 
