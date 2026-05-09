@@ -125,6 +125,13 @@ class TradingDesk:
         stock_pools = self._load_or_build_stock_pools(pool_trade_date, persist)
         xueqiu_snapshot = self._load_or_fetch_xueqiu(pool_trade_date, persist)
         pool_technical_profiles = self._build_pool_technical_profiles(stock_pools)
+        report_opportunities, _ = self.report_builder.rank_report_opportunities(
+            opportunities,
+            quality_gate,
+            stock_pools,
+            pool_technical_profiles,
+        )
+        opportunity_news_results = self._fetch_opportunity_news(report_opportunities)
         index_profiles = self._build_index_profiles()
         report = self.report_builder.build(
             run_id=as_of.strftime("%Y%m%d_%H%M%S"),
@@ -139,6 +146,7 @@ class TradingDesk:
             market_news_results=market_news_results,
             stock_pools=stock_pools,
             xueqiu_snapshot=xueqiu_snapshot,
+            opportunity_news_results=opportunity_news_results,
             technical_profiles=pool_technical_profiles,
             index_profiles=index_profiles,
         )
@@ -166,6 +174,22 @@ class TradingDesk:
         ).build(trade_date)
         self.pool_archive.save(trade_date, pools)
         return pools
+
+    def _fetch_opportunity_news(self, opportunities):
+        news_config = self.config.section("news")
+        lookback_days = int(news_config.get("lookback_days", 2))
+        limit = int(news_config.get("max_items_per_symbol", 20))
+        results = {}
+        for opportunity in opportunities[:10]:
+            try:
+                results[opportunity.symbol] = self.provider.get_security_news_results(
+                    opportunity.symbol,
+                    lookback_days=lookback_days,
+                    limit=limit,
+                )
+            except Exception as exc:
+                results[opportunity.symbol] = []
+        return results
 
     def _load_or_fetch_xueqiu(self, trade_date: str, persist: bool):
         xueqiu_config = self.config.section("xueqiu")

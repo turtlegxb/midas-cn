@@ -279,6 +279,9 @@ def source_label(value: object) -> str:
         "eastmoney_stock_news": "东方财富个股新闻",
         "eastmoney_stock_notice": "东方财富公告",
         "cninfo_disclosure": "巨潮资讯公告",
+        "mock_security_news": "模拟个股新闻",
+        "mock_sector_news": "模拟板块新闻",
+        "mock_market_news": "模拟市场新闻",
         "akshare_stock_zh_a_hist": "东方财富日K行情",
         "akshare_stock_zh_a_daily": "新浪日K行情",
         "akshare_stock_zh_a_hist_tx": "腾讯日K行情",
@@ -387,6 +390,7 @@ def opportunity_card(item) -> list[str]:
         f"**{item.symbol} {item.name}｜{item.grade.value}｜{item.score:.3f}**",
         f"- 板块：{item.evidence.get('sector') or '未分类'}",
         f"- 入选：{pools}",
+        f"- 最新新闻：{latest_news_text(item.evidence.get('news_items', []), limit=3)}",
         f"- 技术：{technical}",
         f"- 触发：{strip_pool_prefix(item.trigger)}",
         f"- 失效：{item.invalidation}",
@@ -432,3 +436,22 @@ def technical_brief(technical: dict, technical_score: object) -> str:
     if technical_score is not None:
         parts.append(f"技术分{float(technical_score):+.3f}")
     return "，".join(parts)
+
+
+def latest_news_text(items: list[dict], limit: int = 3) -> str:
+    if not items:
+        return "暂无"
+    sorted_items = sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)
+    rows = []
+    for index, item in enumerate(sorted_items[:limit], start=1):
+        title = clean_markdown_field(item.get("title") or item.get("summary") or "暂无")
+        if title == "暂无":
+            continue
+        source = source_label(item.get("source") or "")
+        published_at = item.get("published_at")
+        suffix = f"（{source}" if source else "（"
+        if published_at:
+            suffix += f"，{published_at}"
+        suffix += "）"
+        rows.append(f"{index}. {title}{suffix}")
+    return "；".join(rows) if rows else "暂无"

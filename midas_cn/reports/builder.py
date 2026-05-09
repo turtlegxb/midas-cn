@@ -40,6 +40,27 @@ class DailyReportBuilder:
     def __init__(self, llm_synthesis: ReportSynthesisService | None = None):
         self.llm_synthesis = llm_synthesis or ReportSynthesisService()
 
+    def rank_report_opportunities(
+        self,
+        opportunities: list[Opportunity],
+        quality_gate: QualityGate,
+        stock_pools: list[StockPool] | None = None,
+        technical_profiles: dict[str, dict] | None = None,
+    ) -> tuple[list[Opportunity], list[Opportunity]]:
+        ranked_opportunities = sorted(
+            self._pool_opportunities(stock_pools or [], quality_gate, technical_profiles or {}) or opportunities,
+            key=lambda item: item.score,
+            reverse=True,
+        )
+        eligible_opportunities = [item for item in ranked_opportunities if item.grade in {OpportunityGrade.A, OpportunityGrade.B}]
+        report_opportunities = eligible_opportunities[:10]
+        hidden_opportunities = [
+            item
+            for item in ranked_opportunities
+            if item.grade not in {OpportunityGrade.A, OpportunityGrade.B} or item not in report_opportunities
+        ]
+        return report_opportunities, hidden_opportunities
+
     def build(
         self,
         run_id: str,
@@ -54,16 +75,17 @@ class DailyReportBuilder:
         market_news_results: list[SourceResult] | None = None,
         stock_pools: list[StockPool] | None = None,
         xueqiu_snapshot: object | None = None,
+        opportunity_news_results: dict[str, list[SourceResult]] | None = None,
         technical_profiles: dict[str, dict] | None = None,
         index_profiles: dict[str, dict] | None = None,
     ) -> DailyReport:
-        ranked_opportunities = sorted(
-            self._pool_opportunities(stock_pools or [], quality_gate, technical_profiles or {}) or opportunities,
-            key=lambda item: item.score,
-            reverse=True,
+        report_opportunities, hidden_opportunities = self.rank_report_opportunities(
+            opportunities,
+            quality_gate,
+            stock_pools,
+            technical_profiles,
         )
-        hidden_opportunities = [item for item in ranked_opportunities if item.grade not in {OpportunityGrade.A, OpportunityGrade.B}]
-        report_opportunities = [item for item in ranked_opportunities if item.grade in {OpportunityGrade.A, OpportunityGrade.B}]
+        report_opportunities = self._attach_opportunity_news(report_opportunities, opportunity_news_results or {})
         grade_counts = Counter(item.grade.value for item in report_opportunities)
         hidden_count = len(hidden_opportunities)
         overall_review = self._overall_review(market, report_opportunities, quality_gate)
@@ -155,6 +177,7 @@ class DailyReportBuilder:
                 "technical_coverage": self._technical_coverage(technical_profiles or {}),
                 "hidden_opportunities": {
                     "below_b_count": len(hidden_opportunities),
+                    "display_limit": 10,
                     "below_b_symbols": [
                         {"symbol": item.symbol, "name": item.name, "score": item.score}
                         for item in hidden_opportunities
@@ -162,6 +185,43 @@ class DailyReportBuilder:
                 },
             },
         )
+
+    def _attach_opportunity_news(
+        self,
+        opportunities: list[Opportunity],
+        news_results_by_symbol: dict[str, list[SourceResult]],
+    ) -> list[Opportunity]:
+        updated = []
+        for opportunity in opportunities:
+            news_results = news_results_by_symbol.get(opportunity.symbol, [])
+            if not news_results:
+                updated.append(opportunity)
+                continue
+            news_items = [
+                item.__dict__
+                for result in news_results
+                for item in result.items
+            ][:10]
+            evidence = {
+                **opportunity.evidence,
+                "news_items": news_items,
+                "news_source_status": self._merge_source_status([{result.source: result.status.value} for result in news_results]),
+                "source_results": source_results_to_dicts(news_results),
+            }
+            updated.append(
+                Opportunity(
+                    symbol=opportunity.symbol,
+                    name=opportunity.name,
+                    grade=opportunity.grade,
+                    score=opportunity.score,
+                    trigger=opportunity.trigger,
+                    invalidation=opportunity.invalidation,
+                    action=opportunity.action,
+                    risk_flags=opportunity.risk_flags,
+                    evidence=evidence,
+                )
+            )
+        return updated
 
     def _market_mode(self, market: MarketSnapshot) -> str:
         if market.benchmark_trend > 0.15 and market.breadth_score > 0.55:

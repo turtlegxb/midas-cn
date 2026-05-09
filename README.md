@@ -55,8 +55,8 @@ kline_lookback = 90
 
 带归档运行会同时生成：
 
-- `output/reports/<run_id>.md`
-- `output/reports/<run_id>.json`
+- `output/reports/chinese_report_<run_id>.md`
+- `output/reports/chinese_report_<run_id>.json`
 - `output/decisions/<run_id>.json`
 
 ## 验证

@@ -57,6 +57,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(report.quality_gate.status, QualityStatus.PASS)
         self.assertEqual(len(report.action_summary), 4)
         self.assertEqual(len(report.opportunities), 1)
+        self.assertLessEqual(len(report.opportunities), 10)
         self.assertEqual(report.opportunities[0].symbol, "300001.SZ")
         self.assertTrue(report.next_day_scenarios)
         self.assertTrue(report.source_audit)
@@ -95,6 +96,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("技术面", report.opportunities[0].trigger)
         self.assertIn("technical_score", report.opportunities[0].evidence)
         self.assertEqual(report.opportunities[0].evidence["sector"], "软件")
+        self.assertTrue(report.opportunities[0].evidence["news_items"])
         self.assertTrue(report.opportunities[0].evidence["technical"])
         self.assertTrue(any(item["data"] == "选股池" for item in report.source_audit))
         rendered = MarkdownReportRenderer().render(report)
@@ -106,6 +108,9 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("大模型复盘服务", rendered)
         self.assertIn("软件", rendered)
         self.assertIn("- 板块：软件", rendered)
+        self.assertIn("- 最新新闻：", rendered)
+        self.assertNotIn("- 最新新闻：暂无", rendered)
+        self.assertIn("- 最新新闻：1. ", rendered)
         self.assertIn("使用回退源", rendered)
         self.assertIn("东方财富涨停池", rendered)
         self.assertNotIn("akshare.", rendered)
@@ -140,3 +145,38 @@ class DailyReportTest(unittest.TestCase):
                 self.assertIn("grade=C", decisions[symbol].rationale)
             else:
                 self.assertIn(decisions[symbol].signal.value, {"HOLD", "SELL"})
+
+    def test_daily_report_limits_displayed_opportunities_to_ten(self):
+        config = load_config("config/system.toml")
+        config.raw.setdefault("data", {})["provider"] = "mock"
+        config.raw.setdefault("llm", {})["enabled"] = False
+        config.raw.setdefault("xueqiu", {})["enabled"] = False
+        desk = build_trading_desk(config)
+        entries = [
+            StockPoolEntry(f"300{i:03d}.SZ", f"样本{i}", "当日涨停", i, {"成交额": 300000000, "所属行业": "软件"})
+            for i in range(1, 13)
+        ]
+        with TemporaryDirectory() as temp_dir:
+            desk.pool_archive = StockPoolArchive(Path(temp_dir))
+            desk.pool_archive.save(
+                "20260506",
+                [
+                    StockPool(
+                        name="limit_up",
+                        description="当日涨停，不含ST",
+                        entries=entries,
+                        source="akshare.stock_zt_pool_em",
+                        status=SourceStatus.SUCCESS,
+                        as_of="20260506",
+                    )
+                ],
+            )
+            report, _ = desk.run_daily_report(
+                ["600519", "300750"],
+                persist=False,
+                now=datetime(2026, 5, 6, 15, 55),
+            )
+
+        self.assertLessEqual(len(report.opportunities), 10)
+        self.assertEqual(report.metadata["hidden_opportunities"]["display_limit"], 10)
+        self.assertGreaterEqual(report.metadata["hidden_opportunities"]["below_b_count"], 2)

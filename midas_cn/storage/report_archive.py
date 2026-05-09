@@ -25,8 +25,9 @@ class DailyReportArchive:
 
     def save(self, report: DailyReport) -> tuple[Path, Path]:
         self.archive_dir.mkdir(parents=True, exist_ok=True)
-        json_path = self.archive_dir / f"{report.run_id}.json"
-        markdown_path = self.archive_dir / f"{report.run_id}.md"
+        filename = f"chinese_report_{report.run_id}"
+        json_path = self.archive_dir / f"{filename}.json"
+        markdown_path = self.archive_dir / f"{filename}.md"
         json_path.write_text(
             json.dumps(asdict(report), ensure_ascii=False, indent=2, default=_json_default),
             encoding="utf-8",
