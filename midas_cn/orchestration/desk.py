@@ -218,6 +218,8 @@ class TradingDesk:
         for pool in stock_pools:
             if pool.name in critical_names and pool.status == SourceStatus.FAILED:
                 return True
+            if any(entry.metrics and not entry.metrics.get("所属行业") for entry in pool.entries):
+                return True
         return False
 
     def _fetch_opportunity_news(self, opportunities):

@@ -36,10 +36,10 @@ class FakeAkShare:
 
     def stock_zh_a_spot_em(self):
         return [
-            {"代码": "000001", "名称": "平安银行", "换手率": 1.1, "流通市值": 120_000_000_000, "成交额": 2_000_000_000},
-            {"代码": "000002", "名称": "万科A", "换手率": 9.2, "流通市值": 80_000_000_000, "成交额": 1_500_000_000},
-            {"代码": "600001", "名称": "浦发样本", "换手率": 3.5, "流通市值": 70_000_000_000, "成交额": 700_000_000},
-            {"代码": "000003", "名称": "*ST测试", "换手率": 99.0, "流通市值": 1_000_000_000, "成交额": 10_000_000},
+            {"代码": "000001", "名称": "平安银行", "换手率": 1.1, "流通市值": 120_000_000_000, "成交额": 2_000_000_000, "行业": "银行"},
+            {"代码": "000002", "名称": "万科A", "换手率": 9.2, "流通市值": 80_000_000_000, "成交额": 1_500_000_000, "行业": "房地产"},
+            {"代码": "600001", "名称": "浦发样本", "换手率": 3.5, "流通市值": 70_000_000_000, "成交额": 700_000_000, "行业": "银行"},
+            {"代码": "000003", "名称": "*ST测试", "换手率": 99.0, "流通市值": 1_000_000_000, "成交额": 10_000_000, "行业": "风险警示"},
         ]
 
     def stock_zt_pool_em(self, date: str):
@@ -75,6 +75,36 @@ class FundFlowFallbackAkShare(FakeAkShare):
         ]
 
 
+class IndividualIndustryAkShare(FakeAkShare):
+    def stock_zh_a_spot_em(self):
+        return [
+            {"代码": "000001", "名称": "平安银行", "换手率": 1.1, "流通市值": 120_000_000_000, "成交额": 2_000_000_000},
+            {"代码": "000002", "名称": "万科A", "换手率": 9.2, "流通市值": 80_000_000_000, "成交额": 1_500_000_000},
+        ]
+
+    def stock_individual_info_em(self, symbol: str):
+        return [
+            {"item": "股票代码", "value": symbol},
+            {"item": "行业", "value": "个股资料行业"},
+        ]
+
+
+class CninfoIndustryAkShare(IndividualIndustryAkShare):
+    def stock_individual_info_em(self, symbol: str):
+        raise ConnectionError("eastmoney individual info down")
+
+    def stock_industry_change_cninfo(self, symbol: str, start_date: str, end_date: str):
+        return [
+            {
+                "证券代码": symbol,
+                "分类标准": "申银万国行业分类标准",
+                "行业次类": "消费电子",
+                "行业大类": "消费电子零部件及组装",
+                "变更日期": "20210730",
+            }
+        ]
+
+
 class StockPoolBuilderTest(unittest.TestCase):
     def test_builds_all_pools_and_filters_st(self):
         pools = AkShareStockPoolBuilder(FakeAkShare(), top_n=2).build("20260508")
@@ -95,8 +125,23 @@ class StockPoolBuilderTest(unittest.TestCase):
         self.assertEqual([entry.symbol for entry in by_name[POOL_MAIN_NET_INFLOW].entries], ["000001.SZ", "000002.SZ"])
         self.assertEqual([entry.symbol for entry in by_name[POOL_SMALL_FLOAT_NET_INFLOW].entries], ["000002.SZ", "600001.SH"])
         self.assertEqual([entry.symbol for entry in by_name[POOL_TURNOVER].entries], ["000002.SZ", "600001.SH"])
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics["所属行业"], "银行")
+        self.assertEqual(by_name[POOL_SMALL_FLOAT_NET_INFLOW].entries[0].metrics["所属行业"], "房地产")
+        self.assertEqual(by_name[POOL_TURNOVER].entries[0].metrics["所属行业"], "房地产")
         self.assertEqual([entry.symbol for entry in by_name[POOL_LIMIT_UP].entries], ["300001.SZ"])
         self.assertTrue(all("ST" not in entry.name for pool in pools for entry in pool.entries))
+
+    def test_missing_pool_industry_falls_back_to_individual_info(self):
+        pools = AkShareStockPoolBuilder(IndividualIndustryAkShare(), top_n=1).build("20260508")
+        by_name = {pool.name: pool for pool in pools}
+
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics["所属行业"], "个股资料行业")
+
+    def test_missing_pool_industry_falls_back_to_cninfo(self):
+        pools = AkShareStockPoolBuilder(CninfoIndustryAkShare(), top_n=1).build("20260508")
+        by_name = {pool.name: pool for pool in pools}
+
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics["所属行业"], "消费电子")
 
     def test_marks_failed_source_without_mixing_with_success(self):
         pools = AkShareStockPoolBuilder(FailingAkShare(), top_n=2).build("20260508")

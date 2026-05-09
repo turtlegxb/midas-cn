@@ -83,6 +83,27 @@ class DailyReportTest(unittest.TestCase):
 
         self.assertEqual(sorted_items[0]["title"], "关于重大合同中标的公告")
 
+    def test_company_name_in_title_boosts_opportunity_news_sorting(self):
+        builder = DailyReportBuilder(opportunity_news_sort="hybrid")
+        items = [
+            {
+                "title": "行业订单持续改善",
+                "source": "eastmoney_stock_news",
+                "published_at": "2026-05-10 18:00:00",
+                "category": "company",
+            },
+            {
+                "title": "立讯精密获得大客户关注",
+                "source": "eastmoney_stock_news",
+                "published_at": "2026-05-10 17:00:00",
+                "category": "company",
+            },
+        ]
+
+        sorted_items = builder._sort_news_items(items, "立讯精密", "002475.SZ")
+
+        self.assertEqual(sorted_items[0]["title"], "立讯精密获得大客户关注")
+
     def test_opportunity_news_score_and_downgrade_are_applied(self):
         builder = DailyReportBuilder(opportunity_news_sort="hybrid")
         opportunity = Opportunity(
@@ -349,6 +370,22 @@ class DailyReportTest(unittest.TestCase):
                         entries=[],
                         source="akshare.stock_main_fund_flow",
                         status=SourceStatus.FAILED,
+                        as_of="20260508",
+                    )
+                ]
+            )
+        )
+        self.assertTrue(
+            desk._stock_pool_cache_needs_rebuild(
+                [
+                    StockPool(
+                        name="main_net_inflow_top20",
+                        description="主力净额流入top20，不含ST",
+                        entries=[
+                            StockPoolEntry("002475.SZ", "立讯精密", "主力净流入", 1, {"净额": 1_000_000_000})
+                        ],
+                        source="akshare.stock_main_fund_flow",
+                        status=SourceStatus.SUCCESS,
                         as_of="20260508",
                     )
                 ]

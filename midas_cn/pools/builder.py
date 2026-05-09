@@ -22,15 +22,17 @@ class AkShareStockPoolBuilder:
         self.akshare = akshare_module
         self.top_n = top_n
         self.small_float_cap = small_float_cap
+        self._industry_cache: dict[str, str] = {}
 
     def build(self, trade_date: str | None = None) -> list[StockPool]:
         as_of = trade_date or latest_report_trade_date()
         fund_rows, fund_status, fund_source, fund_error = self._fetch_fund_rows()
         spot_rows, spot_status, spot_source, spot_error = self._fetch_spot_rows()
+        spot_rows = [normalize_spot_row(row) for row in spot_rows]
         spot_by_code = {str(row_value(row, "代码", "code")).zfill(6): row for row in spot_rows if row_value(row, "代码", "code")}
 
         pools = [
-            self._main_net_inflow_pool(fund_rows, as_of, fund_status, fund_source, fund_error),
+            self._main_net_inflow_pool(fund_rows, spot_by_code, as_of, fund_status, fund_source, fund_error),
             self._small_float_net_inflow_pool(
                 fund_rows,
                 spot_by_code,
@@ -62,21 +64,23 @@ class AkShareStockPoolBuilder:
                 as_of,
             ),
         ]
-        return pools
+        return self._fill_missing_industries(pools)
 
     def _main_net_inflow_pool(
         self,
         rows: list[dict[str, Any]],
+        spot_by_code: dict[str, dict[str, Any]],
         as_of: str,
         status: SourceStatus,
         source: str,
         error: str | None,
     ) -> StockPool:
+        merged = merge_spot_rows(rows, spot_by_code)
         entries = self._ranked_entries(
-            rows,
+            merged,
             reason="主力净额流入Top20",
             sort_field_candidates=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "净流入"),
-            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "今日涨跌幅", "涨跌幅", "最新价"),
+            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "今日涨跌幅", "涨跌幅", "最新价", "成交额", "流通市值", "所属行业"),
         )
         return StockPool(
             name=POOL_MAIN_NET_INFLOW,
@@ -109,7 +113,7 @@ class AkShareStockPoolBuilder:
             merged,
             reason="流通市值<1000亿成交净额流入Top20",
             sort_field_candidates=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "净流入"),
-            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "流通市值", "今日涨跌幅", "涨跌幅", "成交额"),
+            extra_metrics=("今日主力净流入-净额", "今日主力净流入", "主力净流入", "净额", "流通市值", "今日涨跌幅", "涨跌幅", "成交额", "所属行业"),
         )
         return StockPool(
             name=POOL_SMALL_FLOAT_NET_INFLOW,
@@ -133,7 +137,7 @@ class AkShareStockPoolBuilder:
             rows,
             reason="换手率Top20",
             sort_field_candidates=("换手率",),
-            extra_metrics=("换手率", "成交额", "涨跌幅", "最新价", "流通市值"),
+            extra_metrics=("换手率", "成交额", "涨跌幅", "最新价", "流通市值", "所属行业"),
         )
         return StockPool(
             name=POOL_TURNOVER,
@@ -194,6 +198,87 @@ class AkShareStockPoolBuilder:
                 )
             )
         return entries
+
+    def _fill_missing_industries(self, pools: list[StockPool]) -> list[StockPool]:
+        enriched_pools = []
+        for pool in pools:
+            enriched_entries = []
+            for entry in pool.entries:
+                if entry.metrics.get("所属行业"):
+                    enriched_entries.append(entry)
+                    continue
+                industry = self._industry_for_symbol(entry.symbol)
+                if not industry:
+                    enriched_entries.append(entry)
+                    continue
+                enriched_entries.append(
+                    StockPoolEntry(
+                        symbol=entry.symbol,
+                        name=entry.name,
+                        reason=entry.reason,
+                        rank=entry.rank,
+                        metrics={**entry.metrics, "所属行业": industry},
+                    )
+                )
+            enriched_pools.append(
+                StockPool(
+                    name=pool.name,
+                    description=pool.description,
+                    entries=enriched_entries,
+                    source=pool.source,
+                    status=pool.status,
+                    as_of=pool.as_of,
+                    error_message=pool.error_message,
+                )
+            )
+        return enriched_pools
+
+    def _industry_for_symbol(self, symbol: str) -> str:
+        code = normalize_symbol(symbol).split(".", 1)[0]
+        if code in self._industry_cache:
+            return self._industry_cache[code]
+        fetch = getattr(self.akshare, "stock_individual_info_em", None)
+        if not fetch:
+            self._industry_cache[code] = ""
+            return ""
+        for attempt in range(3):
+            try:
+                frame = fetch(symbol=code)
+                rows = list(frame.to_dict("records")) if hasattr(frame, "to_dict") else list(frame)
+                for row in rows:
+                    item = str(row_value(row, "item") or "").strip()
+                    value = str(row_value(row, "value") or "").strip()
+                    if item == "行业" and value:
+                        self._industry_cache[code] = value
+                        return value
+                break
+            except Exception:
+                if attempt < 2:
+                    time.sleep(0.8 * (attempt + 1))
+        industry = self._industry_from_cninfo(code)
+        if industry:
+            self._industry_cache[code] = industry
+            return industry
+        self._industry_cache[code] = ""
+        return ""
+
+    def _industry_from_cninfo(self, code: str) -> str:
+        fetch = getattr(self.akshare, "stock_industry_change_cninfo", None)
+        if not fetch:
+            return ""
+        try:
+            frame = fetch(symbol=code, start_date="19900101", end_date=datetime.now().strftime("%Y%m%d"))
+            rows = list(frame.to_dict("records")) if hasattr(frame, "to_dict") else list(frame)
+        except Exception:
+            return ""
+        rows = sorted(rows, key=lambda row: str(row_value(row, "变更日期") or ""), reverse=True)
+        preferred = [row for row in rows if "申银万国" in str(row_value(row, "分类标准") or "")]
+        for row in preferred + rows:
+            for field in ("行业次类", "行业大类", "行业中类", "行业门类"):
+                value = row_value(row, field)
+                if value is not None and str(value).strip() and str(value).lower() != "nan":
+                    return str(value).strip()
+        return ""
 
     def _fetch_rows(self, fetch, retries: int = 0, delay_seconds: float = 0.5) -> tuple[list[dict[str, Any]], str | None]:
         last_error = None
@@ -344,6 +429,26 @@ def normalize_fund_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item["成交额"] = to_number(amount)
         normalized.append(item)
     return normalized
+
+
+def normalize_spot_row(row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    code = row_value(row, "代码", "股票代码", "code", "symbol")
+    industry = row_value(row, "所属行业", "行业", "板块")
+    if code is not None:
+        item["代码"] = str(code).zfill(6)
+    if industry is not None and str(industry).strip():
+        item["所属行业"] = str(industry).strip()
+    return item
+
+
+def merge_spot_rows(rows: list[dict[str, Any]], spot_by_code: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    merged = []
+    for row in rows:
+        code = str(row_value(row, "代码", "股票代码", "code", "symbol") or "").zfill(6)
+        spot = spot_by_code.get(code, {})
+        merged.append({**spot, **row})
+    return merged
 
 
 def to_number(value: Any) -> float | None:

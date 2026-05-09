@@ -240,7 +240,7 @@ class DailyReportBuilder:
                 for result in news_results
                 for item in result.items
             ]
-            news_items = self._sort_news_items(news_items)[:10]
+            news_items = self._sort_news_items(news_items, opportunity.name, opportunity.symbol)[:10]
             score_breakdown = dict(opportunity.evidence.get("score_breakdown") or {})
             news_score = self._opportunity_news_score(news_items)
             pool_score = float(score_breakdown.get("pool_score") or opportunity.evidence.get("pool_score") or 0)
@@ -320,20 +320,45 @@ class DailyReportBuilder:
             reasons.append("新闻含监管、问询、立案、减持等风险词")
         return max_grade, reasons
 
-    def _sort_news_items(self, items: list[dict]) -> list[dict]:
+    def _sort_news_items(self, items: list[dict], company_name: str = "", symbol: str = "") -> list[dict]:
         strategy = self.opportunity_news_sort
         if strategy == "published_at":
             return sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)
         if strategy == "source_priority":
-            return sorted(items, key=lambda item: (self._news_source_score(item), str(item.get("published_at") or "")), reverse=True)
+            return sorted(
+                items,
+                key=lambda item: (
+                    self._news_source_score(item),
+                    self._news_company_title_score(item, company_name, symbol),
+                    str(item.get("published_at") or ""),
+                ),
+                reverse=True,
+            )
         if strategy == "relevance":
-            return sorted(items, key=lambda item: (self._news_relevance_score(item), str(item.get("published_at") or "")), reverse=True)
+            return sorted(
+                items,
+                key=lambda item: (
+                    self._news_company_title_score(item, company_name, symbol),
+                    self._news_relevance_score(item),
+                    str(item.get("published_at") or ""),
+                ),
+                reverse=True,
+            )
         if strategy == "event_importance":
-            return sorted(items, key=lambda item: (self._news_event_score(item), str(item.get("published_at") or "")), reverse=True)
+            return sorted(
+                items,
+                key=lambda item: (
+                    self._news_company_title_score(item, company_name, symbol),
+                    self._news_event_score(item),
+                    str(item.get("published_at") or ""),
+                ),
+                reverse=True,
+            )
         return sorted(
             items,
             key=lambda item: (
                 self._news_source_score(item),
+                self._news_company_title_score(item, company_name, symbol),
                 self._news_event_score(item),
                 self._news_relevance_score(item),
                 str(item.get("published_at") or ""),
@@ -351,6 +376,15 @@ class DailyReportBuilder:
         if source.startswith("mock_"):
             return 1
         return 2
+
+    def _news_company_title_score(self, item: dict, company_name: str = "", symbol: str = "") -> int:
+        title = str(item.get("title") or "")
+        name = str(company_name or "").strip()
+        code = str(symbol or "").split(".", 1)[0]
+        aliases = [name, code]
+        if name.endswith("A") and len(name) > 1:
+            aliases.append(name[:-1])
+        return 3 if any(alias and alias in title for alias in aliases) else 0
 
     def _news_event_score(self, item: dict) -> int:
         text = f"{item.get('title') or ''} {item.get('summary') or ''}"
