@@ -464,7 +464,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
             metadata={
                 **base.metadata,
                 "provider": "akshare",
-                "kline_source": "akshare.stock_zh_a_hist",
+                "kline_source": kline_result.provider,
                 "kline_source_results": source_results_to_dicts([kline_result]),
                 "technical": {
                     **base.metadata.get("technical", {}),
@@ -487,7 +487,9 @@ class AkShareMarketDataProvider(MarketDataProvider):
         return self._get_daily_bars_with_result(symbol, lookback)[1]
 
     def _get_daily_bars_with_result(self, symbol: str, lookback: int = 90) -> tuple[list[KLineBar], SourceResult]:
-        cache_key = f"{symbol}|{lookback}|{self.period}|{self.adjust}"
+        period = getattr(self, "period", "daily")
+        adjust = getattr(self, "adjust", "qfq")
+        cache_key = f"tx_primary|{symbol}|{lookback}|{period}|{adjust}"
         cache = getattr(self, "cache", None)
         if cache:
             cached = cache.load("kline", cache_key)
@@ -496,9 +498,9 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 return bars, source_results_from_dicts([cached["result"]])[0]
         errors: list[str] = []
         for source, provider, fetcher in [
+            ("akshare_stock_zh_a_hist_tx", "akshare.stock_zh_a_hist_tx", self._fetch_daily_bars_tencent),
             ("akshare_stock_zh_a_hist", "akshare.stock_zh_a_hist", self._fetch_daily_bars_eastmoney),
             ("akshare_stock_zh_a_daily", "akshare.stock_zh_a_daily", self._fetch_daily_bars_sina),
-            ("akshare_stock_zh_a_hist_tx", "akshare.stock_zh_a_hist_tx", self._fetch_daily_bars_tencent),
         ]:
             try:
                 bars = fetcher(symbol, lookback)
@@ -519,7 +521,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         result = SourceResult(
             data="行情/K线",
             source="akshare_kline_chain",
-            provider="akshare.stock_zh_a_hist|stock_zh_a_daily|stock_zh_a_hist_tx",
+            provider="akshare.stock_zh_a_hist_tx|stock_zh_a_hist|stock_zh_a_daily",
             status=SourceStatus.FAILED,
             error_type="KLineSourceChainError",
             error_message="; ".join(errors),

@@ -37,7 +37,7 @@ python3 -m midas_cn.interfaces.cli --symbols 600519.SH 300750.SZ
 当前已有两种 K 线模式：
 
 - `mock`：内置生成可复现的日 K，用于本地测试，默认会补齐 `EMA8/21/55`、`RSI14`、量比、支撑和压力。
-- `akshare`：可选真实 A 股日 K 源，配置 `data.provider = "akshare"` 后使用 `akshare.stock_zh_a_hist`。
+- `akshare`：可选真实 A 股日 K 源，配置 `data.provider = "akshare"` 后优先使用腾讯日 K，失败后回退东方财富和新浪。
 
 安装可选依赖：
 

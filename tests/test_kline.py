@@ -87,24 +87,48 @@ class KLineTest(unittest.TestCase):
         self.assertEqual(len(end), 8)
         self.assertLess(start, end)
 
-    def test_akshare_kline_chain_uses_secondary_source_after_primary_failure(self):
+    def test_akshare_kline_chain_uses_tencent_as_primary(self):
         provider = object.__new__(AkShareMarketDataProvider)
         provider.fallback = MockMarketDataProvider()
         provider.kline_retries = 0
+        provider.period = "daily"
+        provider.adjust = "qfq"
 
         def fail(*args, **kwargs):
             raise RuntimeError("primary failed")
 
         provider._fetch_daily_bars_eastmoney = fail
-        provider._fetch_daily_bars_sina = lambda symbol, lookback: [
+        provider._fetch_daily_bars_sina = fail
+        provider._fetch_daily_bars_tencent = lambda symbol, lookback: [
             KLineBar("2026-05-08", 1.0, 1.1, 0.9, 1.0, 100.0)
         ]
-        provider._fetch_daily_bars_tencent = fail
 
         bars, result = provider._get_daily_bars_with_result("600519.SH", 1)
 
         self.assertEqual(len(bars), 1)
-        self.assertEqual(result.source, "akshare_stock_zh_a_daily")
+        self.assertEqual(result.source, "akshare_stock_zh_a_hist_tx")
+        self.assertEqual(result.status, SourceStatus.SUCCESS)
+
+    def test_akshare_kline_chain_falls_back_after_tencent_failure(self):
+        provider = object.__new__(AkShareMarketDataProvider)
+        provider.fallback = MockMarketDataProvider()
+        provider.kline_retries = 0
+        provider.period = "daily"
+        provider.adjust = "qfq"
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("primary failed")
+
+        provider._fetch_daily_bars_tencent = fail
+        provider._fetch_daily_bars_eastmoney = lambda symbol, lookback: [
+            KLineBar("2026-05-08", 1.0, 1.1, 0.9, 1.0, 100.0)
+        ]
+        provider._fetch_daily_bars_sina = fail
+
+        bars, result = provider._get_daily_bars_with_result("600519.SH", 1)
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(result.source, "akshare_stock_zh_a_hist")
         self.assertEqual(result.status, SourceStatus.SUCCESS)
 
 
