@@ -22,6 +22,7 @@ lookback_days = 2
 max_items_per_symbol = 20
 market_sources = ["eastmoney_global", "cctv"]
 security_sources = ["eastmoney_stock_news", "eastmoney_stock_notice"]
+opportunity_news_sort = "hybrid"
 
 [cache]
 data_dir = "output/cache"

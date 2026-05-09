@@ -7,10 +7,32 @@ from midas_cn.config import load_config
 from midas_cn.models import OpportunityGrade, QualityStatus, SourceStatus, StockPool, StockPoolEntry
 from midas_cn.orchestration.factory import build_trading_desk
 from midas_cn.pools.storage import StockPoolArchive
+from midas_cn.reports.builder import DailyReportBuilder
 from midas_cn.reports.markdown import MarkdownReportRenderer
 
 
 class DailyReportTest(unittest.TestCase):
+    def test_hybrid_news_sort_prioritizes_important_disclosures(self):
+        builder = DailyReportBuilder(opportunity_news_sort="hybrid")
+        items = [
+            {
+                "title": "普通盘后新闻",
+                "source": "eastmoney_stock_news",
+                "published_at": "2026-05-10 16:00:00",
+                "category": "company",
+            },
+            {
+                "title": "关于重大合同中标的公告",
+                "source": "eastmoney_stock_notice",
+                "published_at": "2026-05-09 18:00:00",
+                "category": "announcement",
+            },
+        ]
+
+        sorted_items = builder._sort_news_items(items)
+
+        self.assertEqual(sorted_items[0]["title"], "关于重大合同中标的公告")
+
     def test_daily_report_builds_phase_one_sections(self):
         config = load_config("config/system.toml")
         config.raw.setdefault("data", {})["provider"] = "mock"

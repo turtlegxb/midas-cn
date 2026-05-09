@@ -55,6 +55,9 @@ kline_adjust = "qfq"
 kline_lookback = 90
 timeout_seconds = 12
 
+[news]
+opportunity_news_sort = "hybrid"
+
 [pools]
 build_if_missing = true
 technical_limit = 20

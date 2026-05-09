@@ -37,8 +37,9 @@ def format_turnover(amount: float | None, volume: float | None) -> str:
 
 
 class DailyReportBuilder:
-    def __init__(self, llm_synthesis: ReportSynthesisService | None = None):
+    def __init__(self, llm_synthesis: ReportSynthesisService | None = None, opportunity_news_sort: str = "hybrid"):
         self.llm_synthesis = llm_synthesis or ReportSynthesisService()
+        self.opportunity_news_sort = opportunity_news_sort
 
     def rank_report_opportunities(
         self,
@@ -201,7 +202,8 @@ class DailyReportBuilder:
                 item.__dict__
                 for result in news_results
                 for item in result.items
-            ][:10]
+            ]
+            news_items = self._sort_news_items(news_items)[:10]
             evidence = {
                 **opportunity.evidence,
                 "news_items": news_items,
@@ -222,6 +224,62 @@ class DailyReportBuilder:
                 )
             )
         return updated
+
+    def _sort_news_items(self, items: list[dict]) -> list[dict]:
+        strategy = self.opportunity_news_sort
+        if strategy == "published_at":
+            return sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)
+        if strategy == "source_priority":
+            return sorted(items, key=lambda item: (self._news_source_score(item), str(item.get("published_at") or "")), reverse=True)
+        if strategy == "relevance":
+            return sorted(items, key=lambda item: (self._news_relevance_score(item), str(item.get("published_at") or "")), reverse=True)
+        if strategy == "event_importance":
+            return sorted(items, key=lambda item: (self._news_event_score(item), str(item.get("published_at") or "")), reverse=True)
+        return sorted(
+            items,
+            key=lambda item: (
+                self._news_source_score(item),
+                self._news_event_score(item),
+                self._news_relevance_score(item),
+                str(item.get("published_at") or ""),
+            ),
+            reverse=True,
+        )
+
+    def _news_source_score(self, item: dict) -> int:
+        source = str(item.get("source") or "")
+        category = str(item.get("category") or "")
+        if "notice" in source or "disclosure" in source or category == "announcement":
+            return 4
+        if "eastmoney_stock_news" in source:
+            return 3
+        if source.startswith("mock_"):
+            return 1
+        return 2
+
+    def _news_event_score(self, item: dict) -> int:
+        text = f"{item.get('title') or ''} {item.get('summary') or ''}"
+        weights = {
+            "业绩": 4,
+            "预增": 4,
+            "中标": 4,
+            "重大合同": 4,
+            "回购": 4,
+            "增持": 4,
+            "并购": 4,
+            "减持": 3,
+            "监管": 3,
+            "问询": 3,
+            "立案": 3,
+            "政策": 2,
+            "涨停": 2,
+        }
+        return max((score for keyword, score in weights.items() if keyword in text), default=0)
+
+    def _news_relevance_score(self, item: dict) -> int:
+        text = f"{item.get('title') or ''} {item.get('summary') or ''}"
+        keywords = ("业绩", "订单", "中标", "合同", "回购", "增持", "减持", "监管", "问询", "政策", "涨停", "板块")
+        return sum(1 for keyword in keywords if keyword in text)
 
     def _market_mode(self, market: MarketSnapshot) -> str:
         if market.benchmark_trend > 0.15 and market.breadth_score > 0.55:

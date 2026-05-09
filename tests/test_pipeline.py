@@ -10,6 +10,7 @@ class PipelineTest(unittest.TestCase):
 
         self.assertTrue(config.section("pools").get("build_if_missing"))
         self.assertEqual(config.section("cache").get("ttl_seconds"), 86_400)
+        self.assertEqual(config.section("news").get("opportunity_news_sort"), "hybrid")
 
     def test_pipeline_runs_without_archive(self):
         config = load_config("config/system.toml")

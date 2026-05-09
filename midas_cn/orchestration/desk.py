@@ -81,6 +81,7 @@ class TradingDesk:
         )
         self.report_builder = DailyReportBuilder(
             llm_synthesis=build_report_synthesis_service(config.section("llm")),
+            opportunity_news_sort=str(config.section("news").get("opportunity_news_sort", "hybrid")),
         )
 
     def run(
