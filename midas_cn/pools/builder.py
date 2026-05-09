@@ -6,6 +6,7 @@ from typing import Any
 
 from midas_cn.data.news import row_value
 from midas_cn.models import SourceStatus, StockPool, StockPoolEntry
+from midas_cn.pools.ths_cache import symbol_classification
 from midas_cn.universe.symbols import normalize_symbol
 
 
@@ -25,21 +26,28 @@ class AkShareStockPoolBuilder:
         small_float_cap: float = 100_000_000_000,
         industry_enrich_limit: int = 8,
         industry_enrich_timeout_seconds: float = 8.0,
+        sector_cache: dict[str, Any] | None = None,
+        progress: Any | None = None,
     ):
         self.akshare = akshare_module
         self.top_n = top_n
         self.small_float_cap = small_float_cap
         self.industry_enrich_limit = industry_enrich_limit
         self.industry_enrich_timeout_seconds = industry_enrich_timeout_seconds
+        self.sector_cache = sector_cache or {}
+        self.progress = progress
         self._industry_cache: dict[str, str] = {}
 
     def build(self, trade_date: str | None = None) -> list[StockPool]:
         as_of = trade_date or latest_report_trade_date()
+        self._emit("拉取资金流选股池")
         fund_rows, fund_status, fund_source, fund_error = self._fetch_fund_rows()
+        self._emit("拉取全市场行情快照")
         spot_rows, spot_status, spot_source, spot_error = self._fetch_spot_rows()
         spot_rows = [normalize_spot_row(row) for row in spot_rows]
         spot_by_code = {str(row_value(row, "代码", "code")).zfill(6): row for row in spot_rows if row_value(row, "代码", "code")}
 
+        self._emit("生成资金流、换手率选股池")
         pools = [
             self._main_net_inflow_pool(fund_rows, spot_by_code, as_of, fund_status, fund_source, fund_error),
             self._small_float_net_inflow_pool(
@@ -51,29 +59,43 @@ class AkShareStockPoolBuilder:
                 combine_errors(fund_error, spot_error),
             ),
             self._turnover_pool(spot_rows, as_of, spot_status, spot_source, spot_error),
+        ]
+        self._emit("拉取涨停池")
+        pools.append(
             self._limit_pool(
                 POOL_LIMIT_UP,
                 "当日涨停",
                 "akshare.stock_zt_pool_em",
                 lambda: self.akshare.stock_zt_pool_em(date=as_of),
                 as_of,
-            ),
+            )
+        )
+        self._emit("拉取跌停池")
+        pools.append(
             self._limit_pool(
                 POOL_LIMIT_DOWN,
                 "当日跌停",
                 "akshare.stock_zt_pool_dtgc_em",
                 lambda: self.akshare.stock_zt_pool_dtgc_em(date=as_of),
                 as_of,
-            ),
+            )
+        )
+        self._emit("拉取炸板池")
+        pools.append(
             self._limit_pool(
                 POOL_BROKEN_LIMIT_UP,
                 "当日炸板",
                 "akshare.stock_zt_pool_zbgc_em",
                 lambda: self.akshare.stock_zt_pool_zbgc_em(date=as_of),
                 as_of,
-            ),
-        ]
+            )
+        )
+        self._emit("补齐选股池行业与概念")
         return self._fill_missing_industries(pools)
+
+    def _emit(self, message: str) -> None:
+        if self.progress:
+            self.progress(message)
 
     def _main_net_inflow_pool(
         self,
@@ -215,6 +237,25 @@ class AkShareStockPoolBuilder:
         for pool in pools:
             enriched_entries = []
             for entry in pool.entries:
+                cached = symbol_classification(self.sector_cache, entry.symbol) if self.sector_cache else {}
+                if cached:
+                    metrics = dict(entry.metrics)
+                    if cached.get("industry"):
+                        metrics["所属行业"] = cached["industry"]
+                        metrics["行业来源"] = cached.get("industry_source", "同花顺行业缓存")
+                    if cached.get("concepts"):
+                        metrics["概念"] = list(cached.get("concepts") or [])[:8]
+                        metrics["概念来源"] = cached.get("concept_source", "同花顺概念缓存")
+                    enriched_entries.append(
+                        StockPoolEntry(
+                            symbol=entry.symbol,
+                            name=entry.name,
+                            reason=entry.reason,
+                            rank=entry.rank,
+                            metrics=metrics,
+                        )
+                    )
+                    continue
                 if entry.metrics.get("所属行业"):
                     enriched_entries.append(entry)
                     continue

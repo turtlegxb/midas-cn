@@ -40,6 +40,11 @@ class AppConfig:
         return PROJECT_ROOT / configured
 
     @property
+    def ths_sector_cache_path(self) -> Path:
+        configured = self.raw.get("ths_cache", {}).get("path", "output/cache/ths_sector/sector_cache.json")
+        return PROJECT_ROOT / configured
+
+    @property
     def default_symbols(self) -> list[str]:
         return list(self.raw.get("universe", {}).get("default_symbols", []))
 

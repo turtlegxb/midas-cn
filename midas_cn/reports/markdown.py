@@ -410,6 +410,7 @@ def opportunity_card(item) -> list[str]:
         "",
         f"**{item.symbol} {item.name}｜{item.grade.value}｜{item.score:.3f}**",
         f"- 板块：{item.evidence.get('sector') or '未分类'}",
+        *([f"- 概念：{'、'.join(item.evidence.get('concepts', [])[:6])}"] if item.evidence.get("concepts") else []),
         f"- 入选：{pools}",
         f"- 评分：{score_breakdown}",
         *([f"- 降级原因：{'；'.join(downgrade_reasons)}"] if downgrade_reasons else []),

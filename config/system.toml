@@ -28,6 +28,13 @@ opportunity_news_sort = "hybrid"
 data_dir = "output/cache"
 ttl_seconds = 86400
 
+[ths_cache]
+path = "output/cache/ths_sector/sector_cache.json"
+ttl_seconds = 86400
+max_industries = 90
+max_concepts = 390
+request_interval_seconds = 0.2
+
 [llm]
 enabled = true
 provider = "claude"

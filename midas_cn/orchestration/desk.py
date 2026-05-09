@@ -11,10 +11,11 @@ from midas_cn.data.news import row_value
 from midas_cn.data.providers import MarketDataProvider, build_provider
 from midas_cn.decision.engine import DecisionEngine
 from midas_cn.llm import build_report_synthesis_service
-from midas_cn.models import DailyReport, DecisionRun, KLineBar, SourceStatus
+from midas_cn.models import DailyReport, DecisionRun, KLineBar, SourceStatus, StockPool, StockPoolEntry
 from midas_cn.playbooks.positioning import PositionPlaybook
 from midas_cn.pools.builder import AkShareStockPoolBuilder, latest_report_trade_date
 from midas_cn.pools.storage import StockPoolArchive
+from midas_cn.pools.ths_cache import load_ths_sector_cache, symbol_classification
 from midas_cn.quality.gates import DataQualityGate
 from midas_cn.reports.builder import DailyReportBuilder
 from midas_cn.risk.engine import RiskEngine
@@ -153,7 +154,7 @@ class TradingDesk:
         position_plan = self.position_playbook.build(opportunities, quality_gate)
         pool_trade_date = calendar.trade_date.replace("-", "") if calendar.is_trading_day else latest_report_trade_date(as_of.date())
         emit(8, "构建或读取选股池")
-        stock_pools = self._load_or_build_stock_pools(pool_trade_date, persist)
+        stock_pools = self._load_or_build_stock_pools(pool_trade_date, persist, emit)
         emit(9, "拉取雪球跟踪数据")
         xueqiu_snapshot = self._load_or_fetch_xueqiu(pool_trade_date, persist)
         emit(10, "计算选股池技术指标")
@@ -192,27 +193,85 @@ class TradingDesk:
             paths = {"report_json": str(json_path), "report_markdown": str(markdown_path)}
         return report, paths
 
-    def _load_or_build_stock_pools(self, trade_date: str, persist: bool):
+    def _load_or_build_stock_pools(self, trade_date: str, persist: bool, progress_emit=None):
         pool_config = self.config.section("pools")
         if not bool(pool_config.get("enabled", True)):
             return []
         should_build = persist or bool(pool_config.get("build_if_missing", False))
         akshare_module = getattr(self.provider, "akshare", None)
+        sector_cache = self._load_ths_sector_cache()
+        if progress_emit:
+            progress_emit(8, "检查选股池缓存")
         cached = self.pool_archive.load(trade_date)
         if cached and not self._stock_pool_cache_needs_rebuild(cached):
-            return cached
+            if progress_emit:
+                progress_emit(8, "读取选股池缓存并合并同花顺行业/概念缓存")
+            return self._apply_sector_cache_to_pools(cached, sector_cache)
         if cached and (not should_build or akshare_module is None):
-            return cached
+            if progress_emit:
+                progress_emit(8, "使用已有选股池缓存")
+            return self._apply_sector_cache_to_pools(cached, sector_cache)
         if not should_build or akshare_module is None:
             return []
+        if progress_emit:
+            progress_emit(8, "开始构建选股池")
         pools = AkShareStockPoolBuilder(
             akshare_module,
             top_n=int(pool_config.get("top_n", 20)),
             small_float_cap=float(pool_config.get("small_float_cap", 100_000_000_000)),
             industry_enrich_limit=int(pool_config.get("industry_enrich_limit", 8)),
             industry_enrich_timeout_seconds=float(pool_config.get("industry_enrich_timeout_seconds", 8)),
+            sector_cache=sector_cache,
+            progress=(lambda message: progress_emit(8, f"构建选股池：{message}")) if progress_emit else None,
         ).build(trade_date)
         self.pool_archive.save(trade_date, pools)
+        return pools
+
+    def _load_ths_sector_cache(self) -> dict:
+        cache_config = self.config.section("ths_cache")
+        return load_ths_sector_cache(
+            self.config.ths_sector_cache_path,
+            ttl_seconds=int(cache_config.get("ttl_seconds", self.config.section("cache").get("ttl_seconds", 86_400))),
+        )
+
+    def _apply_sector_cache_to_pools(self, stock_pools: list[StockPool], sector_cache: dict) -> list[StockPool]:
+        if not sector_cache:
+            return stock_pools
+        pools = []
+        for pool in stock_pools:
+            entries = []
+            for entry in pool.entries:
+                cached = symbol_classification(sector_cache, entry.symbol)
+                if not cached:
+                    entries.append(entry)
+                    continue
+                metrics = dict(entry.metrics)
+                if cached.get("industry"):
+                    metrics["所属行业"] = cached["industry"]
+                    metrics["行业来源"] = cached.get("industry_source", "同花顺行业缓存")
+                if cached.get("concepts"):
+                    metrics["概念"] = list(cached.get("concepts") or [])[:8]
+                    metrics["概念来源"] = cached.get("concept_source", "同花顺概念缓存")
+                entries.append(
+                    StockPoolEntry(
+                        symbol=entry.symbol,
+                        name=entry.name,
+                        reason=entry.reason,
+                        rank=entry.rank,
+                        metrics=metrics,
+                    )
+                )
+            pools.append(
+                StockPool(
+                    name=pool.name,
+                    description=pool.description,
+                    entries=entries,
+                    source=pool.source,
+                    status=pool.status,
+                    as_of=pool.as_of,
+                    error_message=pool.error_message,
+                )
+            )
         return pools
 
     def _stock_pool_cache_needs_rebuild(self, stock_pools) -> bool:

@@ -1,0 +1,9 @@
+# Midas CN scheduled jobs. Replace /path/to/midas-cn with the repository path.
+SHELL=/bin/zsh
+PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
+
+# Refresh Tonghuashun industry/concept cache once per trading day before report generation.
+10 15 * * 1-5 cd /path/to/midas-cn && mkdir -p output/logs && .venv/bin/python scripts/build_ths_sector_cache.py --quiet >> output/logs/ths_sector_cache.log 2>&1
+
+# Generate the daily Chinese report after market close.
+35 15 * * 1-5 cd /path/to/midas-cn && mkdir -p output/logs && .venv/bin/python -m midas_cn.interfaces.cli report >> output/logs/daily_report.log 2>&1

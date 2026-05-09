@@ -107,7 +107,8 @@ class CninfoIndustryAkShare(IndividualIndustryAkShare):
 
 class StockPoolBuilderTest(unittest.TestCase):
     def test_builds_all_pools_and_filters_st(self):
-        pools = AkShareStockPoolBuilder(FakeAkShare(), top_n=2).build("20260508")
+        progress_messages = []
+        pools = AkShareStockPoolBuilder(FakeAkShare(), top_n=2, progress=progress_messages.append).build("20260508")
         by_name = {pool.name: pool for pool in pools}
 
         self.assertEqual(
@@ -130,6 +131,26 @@ class StockPoolBuilderTest(unittest.TestCase):
         self.assertEqual(by_name[POOL_TURNOVER].entries[0].metrics["所属行业"], "房地产")
         self.assertEqual([entry.symbol for entry in by_name[POOL_LIMIT_UP].entries], ["300001.SZ"])
         self.assertTrue(all("ST" not in entry.name for pool in pools for entry in pool.entries))
+        self.assertIn("拉取资金流选股池", progress_messages)
+        self.assertIn("补齐选股池行业与概念", progress_messages)
+
+    def test_sector_cache_overrides_pool_industry_and_adds_concepts(self):
+        cache = {
+            "symbols": {
+                "000001.SZ": {
+                    "industry": "同花顺银行",
+                    "industry_source": "同花顺行业缓存",
+                    "concepts": ["破净股"],
+                    "concept_source": "同花顺概念缓存",
+                }
+            }
+        }
+        pools = AkShareStockPoolBuilder(FakeAkShare(), top_n=1, sector_cache=cache).build("20260508")
+        by_name = {pool.name: pool for pool in pools}
+
+        metrics = by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics
+        self.assertEqual(metrics["所属行业"], "同花顺银行")
+        self.assertEqual(metrics["概念"], ["破净股"])
 
     def test_missing_pool_industry_falls_back_to_individual_info(self):
         pools = AkShareStockPoolBuilder(IndividualIndustryAkShare(), top_n=1).build("20260508")

@@ -1341,6 +1341,7 @@ class DailyReportBuilder:
                 "source": "选股池",
                 "pools": pool_names,
                 "sector": str(item["metrics"].get("所属行业") or "未分类"),
+                "concepts": list(item["metrics"].get("概念") or [])[:8] if isinstance(item["metrics"].get("概念"), list) else [],
                 "metrics": item["metrics"],
                 "pool_score": round(item["score"], 3),
                 "technical_score": round(technical_score, 3),

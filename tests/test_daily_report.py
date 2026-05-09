@@ -375,6 +375,41 @@ class DailyReportTest(unittest.TestCase):
                 ]
             )
         )
+
+    def test_ths_sector_cache_overrides_cached_stock_pool(self):
+        config = load_config("config/system.toml")
+        config.raw.setdefault("data", {})["provider"] = "mock"
+        desk = build_trading_desk(config)
+        pools = [
+            StockPool(
+                name="main_net_inflow_top20",
+                description="主力净额流入top20，不含ST",
+                entries=[
+                    StockPoolEntry("002475.SZ", "立讯精密", "主力净流入", 1, {"所属行业": "旧行业"})
+                ],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+
+        enriched = desk._apply_sector_cache_to_pools(
+            pools,
+            {
+                "symbols": {
+                    "002475.SZ": {
+                        "industry": "消费电子",
+                        "industry_source": "同花顺行业缓存",
+                        "concepts": ["苹果概念"],
+                        "concept_source": "同花顺概念缓存",
+                    }
+                }
+            },
+        )
+
+        metrics = enriched[0].entries[0].metrics
+        self.assertEqual(metrics["所属行业"], "消费电子")
+        self.assertEqual(metrics["概念"], ["苹果概念"])
         self.assertFalse(
             desk._stock_pool_cache_needs_rebuild(
                 [
