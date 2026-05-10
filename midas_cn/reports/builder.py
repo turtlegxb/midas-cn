@@ -1157,20 +1157,25 @@ class DailyReportBuilder:
             }
         raw_posts = list(getattr(snapshot, "posts", []) or [])
         cutoff = self._xueqiu_summary_cutoff(getattr(snapshot, "as_of", ""))
-        posts = [
+        posts_in_window = [
             post
             for post in raw_posts
             if getattr(post, "post_type", "") != "repost"
             and self._xueqiu_post_in_window(getattr(post, "created_at", None), cutoff)
         ]
-        changes = list(getattr(snapshot, "position_changes", []) or [])
+        posts = [post for post in posts_in_window if self._xueqiu_non_us_symbols(post)]
+        changes = [
+            change
+            for change in list(getattr(snapshot, "position_changes", []) or [])
+            if not self._xueqiu_is_us_symbol(getattr(change, "stock_symbol", ""))
+        ]
         post_type_counts = Counter(getattr(post, "post_type", "unknown") or "unknown" for post in posts)
         symbol_counter: Counter[str] = Counter()
         symbol_kols: dict[str, set[str]] = defaultdict(set)
         symbol_posts: dict[str, list[dict]] = defaultdict(list)
         symbol_names: dict[str, str] = {}
         for post in posts:
-            for symbol in getattr(post, "symbols", []) or []:
+            for symbol in self._xueqiu_non_us_symbols(post):
                 symbol_counter[symbol] += 1
                 symbol_kols[symbol].add(getattr(post, "account_name", "") or getattr(post, "user_id", "") or "未知KOL")
                 symbol_posts[symbol].append(
@@ -1251,11 +1256,13 @@ class DailyReportBuilder:
         ]
         status = getattr(getattr(snapshot, "status", None), "value", str(getattr(snapshot, "status", "missing")))
         if status in {"success", "partial"} and (posts or changes):
-            dropped = len(raw_posts) - len(posts)
+            stale_or_repost_dropped = len(raw_posts) - len(posts_in_window)
+            us_dropped = len(posts_in_window) - len(posts)
             summary = (
                 f"雪球跟踪获取到{len(raw_posts)}条大V帖子，按上个交易日至今且剔除转发后保留{len(posts)}条；"
                 f"公开组合调仓{len(changes)}条；与选股池/机会重合{len(overlaps)}个。"
-                + (f" 已剔除{dropped}条旧帖或转发。" if dropped else "")
+                + (f" 已剔除{stale_or_repost_dropped}条旧帖或转发。" if stale_or_repost_dropped else "")
+                + (f" 已剔除{us_dropped}条美股相关帖子。" if us_dropped else "")
             )
         else:
             result = getattr(snapshot, "source_result", None)
@@ -1266,6 +1273,7 @@ class DailyReportBuilder:
             "post_count": len(posts),
             "raw_post_count": len(raw_posts),
             "filtered_post_count": len(posts),
+            "excluded_us_post_count": len(posts_in_window) - len(posts),
             "summary_cutoff": cutoff.isoformat() if cutoff else None,
             "post_type_counts": dict(post_type_counts),
             "position_change_count": len(changes),
@@ -1276,17 +1284,45 @@ class DailyReportBuilder:
         }
 
     def _attach_xueqiu_insights(self, xueqiu_tracking: dict, insights: dict[str, dict[str, str]]) -> dict:
-        if not insights:
-            return xueqiu_tracking
         ticker_views = []
         for item in xueqiu_tracking.get("ticker_views", []):
             insight = insights.get(item.get("symbol"))
             ticker_views.append({**item, "sentiment": insight.get("sentiment", item.get("sentiment")), "llm_view": insight} if insight else item)
+        filtered_views = [
+            item
+            for item in ticker_views
+            if self._xueqiu_view_sentiment(item) != "neutral"
+        ]
+        excluded_neutral_count = len(ticker_views) - len(filtered_views)
+        visible_symbols = {item.get("symbol") for item in filtered_views}
+        mentioned_symbols = [
+            item
+            for item in xueqiu_tracking.get("mentioned_symbols", [])
+            if item.get("symbol") in visible_symbols
+        ]
+        overlaps = [
+            item
+            for item in xueqiu_tracking.get("overlaps", [])
+            if item.get("symbol") in visible_symbols
+        ]
         summary = xueqiu_tracking.get("summary", "")
-        overlap_count = sum(1 for item in ticker_views if int(item.get("kol_count") or 0) >= 2)
+        overlap_count = sum(1 for item in filtered_views if int(item.get("kol_count") or 0) >= 2)
         if overlap_count:
             summary = f"{summary} 多KOL重叠标的{overlap_count}个，报告优先观察这些共识/分歧点。"
-        return {**xueqiu_tracking, "summary": summary, "ticker_views": ticker_views}
+        if excluded_neutral_count:
+            summary = f"{summary} 已剔除{excluded_neutral_count}个中性结论标的。"
+        return {
+            **xueqiu_tracking,
+            "summary": summary,
+            "ticker_views": filtered_views,
+            "mentioned_symbols": mentioned_symbols,
+            "overlaps": overlaps,
+            "excluded_neutral_view_count": excluded_neutral_count,
+        }
+
+    def _xueqiu_view_sentiment(self, item: dict) -> str:
+        llm_view = item.get("llm_view") or {}
+        return str(llm_view.get("sentiment") or item.get("sentiment") or "neutral").strip().lower()
 
     def _truncate_text(self, text: object, limit: int) -> str:
         cleaned = " ".join(str(text or "").split())
@@ -1318,6 +1354,16 @@ class DailyReportBuilder:
             except ValueError:
                 continue
         return True
+
+    def _xueqiu_non_us_symbols(self, post: object) -> list[str]:
+        return [
+            symbol
+            for symbol in list(getattr(post, "symbols", []) or [])
+            if not self._xueqiu_is_us_symbol(symbol)
+        ]
+
+    def _xueqiu_is_us_symbol(self, symbol: object) -> bool:
+        return str(symbol or "").strip().upper().endswith(".US")
 
     def _xueqiu_rule_sentiment(self, posts: list[dict]) -> str:
         text = " ".join(str(post.get("text") or "") for post in posts).lower()

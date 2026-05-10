@@ -189,6 +189,136 @@ class XueqiuTest(unittest.TestCase):
         self.assertEqual(result["post_type_counts"], {"long_post": 1})
         self.assertEqual(result["ticker_views"][0]["sentiment"], "positive")
 
+    def test_report_xueqiu_summary_drops_us_symbols(self):
+        snapshot = XueqiuSnapshot(
+            as_of="20260510",
+            status=SourceStatus.SUCCESS,
+            posts=[
+                XueqiuPost(
+                    account_name="美股帖",
+                    user_id="1",
+                    post_id="1",
+                    title="",
+                    text="只聊 $英伟达(NVDA)$",
+                    created_at="2026-05-08T09:30:00",
+                    url=None,
+                    symbols=["NVDA.US"],
+                    post_type="short_post",
+                ),
+                XueqiuPost(
+                    account_name="混合帖",
+                    user_id="2",
+                    post_id="2",
+                    title="",
+                    text="腾讯和英伟达都看好",
+                    created_at="2026-05-08T10:00:00",
+                    url=None,
+                    symbols=["00700.HK", "NVDA.US"],
+                    post_type="long_post",
+                ),
+            ],
+            position_changes=[
+                XueqiuPositionChange(
+                    portfolio_name="样本组合",
+                    portfolio_symbol="ZH123456",
+                    stock_symbol="NVDA.US",
+                    stock_name="英伟达",
+                    action="加仓",
+                    weight_before=1.0,
+                    weight_after=2.0,
+                    changed_at="2026-05-08T15:00:00",
+                ),
+                XueqiuPositionChange(
+                    portfolio_name="样本组合",
+                    portfolio_symbol="ZH123456",
+                    stock_symbol="00700.HK",
+                    stock_name="腾讯控股",
+                    action="加仓",
+                    weight_before=1.0,
+                    weight_after=2.0,
+                    changed_at="2026-05-08T15:00:00",
+                ),
+            ],
+        )
+
+        result = DailyReportBuilder()._xueqiu_tracking_analysis(snapshot, [], [])
+
+        symbols = {item["symbol"] for item in result["ticker_views"]}
+        change_symbols = {item["symbol"] for item in result["confirmed_position_changes"]}
+        self.assertEqual(result["excluded_us_post_count"], 1)
+        self.assertEqual(result["post_count"], 1)
+        self.assertIn("00700.HK", symbols)
+        self.assertNotIn("NVDA.US", symbols)
+        self.assertEqual(change_symbols, {"00700.HK"})
+
+    def test_report_xueqiu_summary_drops_neutral_rule_views(self):
+        snapshot = XueqiuSnapshot(
+            as_of="20260510",
+            status=SourceStatus.SUCCESS,
+            posts=[
+                XueqiuPost(
+                    account_name="看多",
+                    user_id="1",
+                    post_id="1",
+                    title="",
+                    text="看好机会 $寒武纪(SH688256)$",
+                    created_at="2026-05-08T09:30:00",
+                    url=None,
+                    symbols=["688256.SH"],
+                    post_type="short_post",
+                ),
+                XueqiuPost(
+                    account_name="中性",
+                    user_id="2",
+                    post_id="2",
+                    title="",
+                    text="提到 $贵州茅台(SH600519)$",
+                    created_at="2026-05-08T10:00:00",
+                    url=None,
+                    symbols=["600519.SH"],
+                    post_type="short_post",
+                ),
+            ],
+        )
+
+        builder = DailyReportBuilder()
+        tracking = builder._xueqiu_tracking_analysis(snapshot, [], [])
+        result = builder._attach_xueqiu_insights(tracking, {})
+
+        symbols = {item["symbol"] for item in result["ticker_views"]}
+        self.assertEqual(result["excluded_neutral_view_count"], 1)
+        self.assertEqual(symbols, {"688256.SH"})
+
+    def test_report_xueqiu_summary_drops_llm_neutral_views(self):
+        tracking = {
+            "summary": "雪球跟踪。",
+            "ticker_views": [
+                {"symbol": "688256.SH", "sentiment": "positive", "kol_count": 1, "post_count": 1},
+                {"symbol": "600519.SH", "sentiment": "positive", "kol_count": 1, "post_count": 1},
+            ],
+            "mentioned_symbols": [
+                {"symbol": "688256.SH"},
+                {"symbol": "600519.SH"},
+            ],
+            "overlaps": [
+                {"symbol": "688256.SH"},
+                {"symbol": "600519.SH"},
+            ],
+        }
+
+        result = DailyReportBuilder()._attach_xueqiu_insights(
+            tracking,
+            {"600519.SH": {"sentiment": "neutral", "view_summary": "缺少方向"}},
+        )
+
+        symbols = {item["symbol"] for item in result["ticker_views"]}
+        mentioned = {item["symbol"] for item in result["mentioned_symbols"]}
+        overlaps = {item["symbol"] for item in result["overlaps"]}
+        self.assertEqual(result["excluded_neutral_view_count"], 1)
+        self.assertEqual(symbols, {"688256.SH"})
+        self.assertEqual(mentioned, {"688256.SH"})
+        self.assertEqual(overlaps, {"688256.SH"})
+
 
 if __name__ == "__main__":
     unittest.main()

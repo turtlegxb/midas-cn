@@ -217,6 +217,8 @@ node scripts/xueqiu_fetcher.js following 100
 - `article`：长文，雪球原始 `type = "3"` 或带 `title/rawTitle`。
 - `repost`：转发，存在 `retweeted_status`。
 
+报告聚合只保留上一个交易日至今的原发内容，剔除转发；涉及 `.US` 的美股标的会从雪球观点、重叠标的和公开组合调仓中剔除。
+
 对 `long_post` 和 `article`，抓取器会额外请求 `statuses/show.json?id=<post_id>` 补齐原文，并输出：
 
 - `full_text`：完整纯文本。
@@ -224,7 +226,7 @@ node scripts/xueqiu_fetcher.js following 100
 - `detail_fetched`：详情是否成功。
 - `detail_error`：详情失败原因。
 
-报告会按 ticker 聚合 KOL 观点，重点展示多位 KOL 重叠提及的标的。KOL 总结只保留上一个交易日 00:00 至报告生成时的内容，并在聚合前丢弃 `repost` 转发内容。LLM 可用时，会基于 `full_text` 生成观点摘要、KOL overlap、看多/看空/中性判断和风险提示；不可用时保留原帖摘要、规则情绪和链接作为回退。
+报告会按 ticker 聚合 KOL 观点，重点展示多位 KOL 重叠提及的标的。KOL 总结只保留上一个交易日 00:00 至报告生成时的内容，并在聚合前丢弃 `repost` 转发内容。LLM 可用时，会基于 `full_text` 生成观点摘要、KOL overlap、看多/看空/中性判断和风险提示；不可用时保留原帖摘要、规则情绪和链接作为回退。最终报告只展示看多/看空/分歧标的，丢弃中性结论。
 
 带归档运行会同时生成：
 
