@@ -34,13 +34,49 @@ def cache_targets(root: Path) -> list[tuple[str, Path]]:
 def clear_cache(root: Path, target: str = "all") -> list[Path]:
     removed = []
     targets = cache_targets(root)
+    target_names = resolve_cache_targets(target)
     for name, path in targets:
-        if target not in {"all", name}:
+        if "all" not in target_names and name not in target_names:
             continue
         if path.exists():
             shutil.rmtree(path)
             removed.append(path)
     return removed
+
+
+def resolve_cache_targets(target: str) -> set[str]:
+    aliases = {
+        "all": {"all"},
+        "全部": {"all"},
+        "kline": {"K线"},
+        "k-line": {"K线"},
+        "bars": {"K线"},
+        "K线": {"K线"},
+        "news": {"个股新闻", "市场新闻"},
+        "security_news": {"个股新闻"},
+        "stock_news": {"个股新闻"},
+        "个股新闻": {"个股新闻"},
+        "market_news": {"市场新闻"},
+        "市场新闻": {"市场新闻"},
+        "index": {"指数状态"},
+        "indices": {"指数状态"},
+        "index_profiles": {"指数状态"},
+        "指数状态": {"指数状态"},
+        "pools": {"选股池"},
+        "stock_pools": {"选股池"},
+        "pool": {"选股池"},
+        "选股池": {"选股池"},
+        "xueqiu": {"雪球"},
+        "snowball": {"雪球"},
+        "雪球": {"雪球"},
+    }
+    resolved: set[str] = set()
+    for raw in str(target or "").split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        resolved.update(aliases.get(item, {item}))
+    return resolved or {"all"}
 
 
 def cache_status(name: str, path: Path, ttl_seconds: int) -> CacheStatus:

@@ -106,10 +106,40 @@ node scripts/xueqiu_fetcher.js following 5
 .venv/bin/python -m midas_cn.interfaces.cli cache clear --target K线
 .venv/bin/python -m midas_cn.interfaces.cli sources check --symbol 600519.SH
 .venv/bin/python -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --symbols 600519.SH
+.venv/bin/python -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --refresh xueqiu,news
 .venv/bin/python scripts/build_ths_sector_cache.py --pool-date 20260508 --skip-board-lists --quiet
 ```
 
 默认使用 mock 数据源，可在无 API key 的环境里验证流程。后续接入真实行情、财务、公告、新闻和交易接口时，只需要实现 `midas_cn.data.providers.MarketDataProvider`。
+
+### 单步刷新与重跑
+
+`report --refresh` 可在报告生成前清理指定缓存，相当于重跑某些数据步骤后再组装报告。常用别名：
+
+- `xueqiu`：雪球关注流与公开组合缓存。
+- `news`：个股新闻和市场新闻缓存。
+- `kline`：K线缓存。
+- `index`：指数状态缓存。
+- `pools`：选股池缓存。
+- `all`：全部缓存。
+
+示例：
+
+```bash
+# 只重抓雪球，再重新组装报告
+.venv/bin/python -m midas_cn.interfaces.cli report --refresh xueqiu
+
+# 只重抓新闻，包括市场新闻和个股新闻
+.venv/bin/python -m midas_cn.interfaces.cli report --refresh news
+
+# 同时刷新雪球和新闻，适合调试 KOL 总结和个股新闻解读
+.venv/bin/python -m midas_cn.interfaces.cli report --refresh xueqiu,news
+
+# 刷新全部缓存后完整重跑
+.venv/bin/python -m midas_cn.interfaces.cli report --refresh all
+```
+
+注意：`--refresh` 不是只执行某一个 step 后退出，而是先清理指定缓存，再完整执行报告流水线。这样可以复用其他未过期缓存，同时保证最终报告仍然是完整一致的。
 
 ### K 线数据源
 
@@ -194,7 +224,7 @@ node scripts/xueqiu_fetcher.js following 100
 - `detail_fetched`：详情是否成功。
 - `detail_error`：详情失败原因。
 
-报告会按 ticker 聚合 KOL 观点，重点展示多位 KOL 重叠提及的标的。LLM 可用时，会基于 `full_text` 生成观点摘要、KOL overlap、情绪和风险提示；不可用时保留原帖摘要和链接作为回退。转发会保留但在 LLM 提示中降权，优先总结原发长文/长帖。
+报告会按 ticker 聚合 KOL 观点，重点展示多位 KOL 重叠提及的标的。KOL 总结只保留上一个交易日 00:00 至报告生成时的内容，并在聚合前丢弃 `repost` 转发内容。LLM 可用时，会基于 `full_text` 生成观点摘要、KOL overlap、看多/看空/中性判断和风险提示；不可用时保留原帖摘要、规则情绪和链接作为回退。
 
 带归档运行会同时生成：
 

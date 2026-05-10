@@ -13,6 +13,7 @@ from midas_cn.social.xueqiu import (
     XueqiuTracker,
     extract_symbols,
 )
+from midas_cn.reports.builder import DailyReportBuilder
 
 
 class XueqiuTest(unittest.TestCase):
@@ -139,6 +140,54 @@ class XueqiuTest(unittest.TestCase):
         self.assertEqual(post.account_name, "样本KOL")
         self.assertEqual(post.symbols, ["00700.HK", "688981.SH"])
         self.assertEqual(post.full_text, "$腾讯控股(00700)$ $中芯国际(SH688981)$ AI投入继续升温")
+
+    def test_report_xueqiu_summary_keeps_previous_trading_day_and_drops_reposts(self):
+        snapshot = XueqiuSnapshot(
+            as_of="20260510",
+            status=SourceStatus.SUCCESS,
+            posts=[
+                XueqiuPost(
+                    account_name="旧帖",
+                    user_id="1",
+                    post_id="1",
+                    title="",
+                    text="旧内容 $寒武纪(SH688256)$",
+                    created_at="2026-05-07T15:00:00",
+                    url=None,
+                    symbols=["688256.SH"],
+                    post_type="short_post",
+                ),
+                XueqiuPost(
+                    account_name="转发",
+                    user_id="2",
+                    post_id="2",
+                    title="",
+                    text="转发看好 $寒武纪(SH688256)$",
+                    created_at="2026-05-10T10:00:00",
+                    url=None,
+                    symbols=["688256.SH"],
+                    post_type="repost",
+                ),
+                XueqiuPost(
+                    account_name="有效",
+                    user_id="3",
+                    post_id="3",
+                    title="",
+                    text="看好机会 $寒武纪(SH688256)$",
+                    created_at="2026-05-08T09:30:00",
+                    url=None,
+                    symbols=["688256.SH"],
+                    post_type="long_post",
+                ),
+            ],
+        )
+
+        result = DailyReportBuilder()._xueqiu_tracking_analysis(snapshot, [], [])
+
+        self.assertEqual(result["post_count"], 1)
+        self.assertEqual(result["raw_post_count"], 3)
+        self.assertEqual(result["post_type_counts"], {"long_post": 1})
+        self.assertEqual(result["ticker_views"][0]["sentiment"], "positive")
 
 
 if __name__ == "__main__":

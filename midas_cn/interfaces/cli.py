@@ -6,7 +6,7 @@ import sys
 
 from midas_cn.config import load_config
 from midas_cn.orchestration.factory import build_trading_desk
-from midas_cn.storage.cache_status import clear_cache, collect_cache_status
+from midas_cn.storage.cache_status import clear_cache, collect_cache_status, resolve_cache_targets
 
 
 class TerminalProgress:
@@ -51,6 +51,14 @@ def add_report_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-archive", action="store_true", help="Run without writing archive JSON.")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress logs.")
     parser.add_argument("--trade-date", help="Report trade date in YYYYMMDD or YYYY-MM-DD.")
+    parser.add_argument(
+        "--refresh",
+        default="",
+        help=(
+            "Clear selected caches before generating the report. "
+            "Comma-separated aliases: xueqiu, news, kline, index, pools, all."
+        ),
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -70,6 +78,16 @@ def main(argv: list[str] | None = None) -> int:
 
 def run_report(args) -> int:
     config = load_config(args.config)
+    if getattr(args, "refresh", ""):
+        root = config.data_cache_dir.parents[1]
+        targets = ",".join(sorted(resolve_cache_targets(args.refresh)))
+        removed = clear_cache(root, target=args.refresh)
+        print(f"refresh_targets: {targets}")
+        if removed:
+            for path in removed:
+                print(f"refresh_removed: {path}")
+        else:
+            print("refresh_removed: none")
     desk = build_trading_desk(config)
     now = parse_trade_date(args.trade_date) if args.trade_date else None
     decision_run, archive_path = desk.run(

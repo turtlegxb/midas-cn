@@ -149,8 +149,7 @@ class XueqiuTracker:
             timeout=float(self.config.get("timeout_seconds", 15)),
             request_interval_seconds=float(self.config.get("request_interval_seconds", 2)),
         )
-        lookback_days = int(self.config.get("lookback_days", 7))
-        cutoff = datetime.now() - timedelta(days=lookback_days)
+        cutoff = _xueqiu_summary_cutoff(as_of)
         posts: list[XueqiuPost] = []
         changes: list[XueqiuPositionChange] = []
         errors: list[str] = []
@@ -185,7 +184,7 @@ class XueqiuTracker:
             status=status,
             error_message="；".join(errors) if errors else None,
             checked_at=datetime.now().isoformat(),
-            context={**context, "posts": str(len(posts)), "position_changes": str(len(changes))},
+            context={**context, "summary_cutoff": cutoff.isoformat(), "posts": str(len(posts)), "position_changes": str(len(changes))},
         )
         return XueqiuSnapshot(as_of=as_of, status=status, posts=posts, position_changes=changes, source_result=result)
 
@@ -520,6 +519,24 @@ def _parse_xueqiu_time(value: object) -> datetime | None:
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d %H:%M:%S", "%Y/%m/%d"):
         try:
             return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _xueqiu_summary_cutoff(as_of: str) -> datetime:
+    current = _parse_report_date(as_of) or datetime.now()
+    previous = current.date() - timedelta(days=1)
+    while previous.weekday() >= 5:
+        previous -= timedelta(days=1)
+    return datetime.combine(previous, datetime.min.time())
+
+
+def _parse_report_date(value: object) -> datetime | None:
+    text = str(value or "").strip()
+    for fmt in ("%Y%m%d", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[:10], fmt)
         except ValueError:
             continue
     return None

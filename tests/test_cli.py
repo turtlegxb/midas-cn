@@ -103,6 +103,38 @@ enabled = false
             self.assertEqual(exit_code, 0)
             self.assertIn("run_id: 20260508_155500", stream.getvalue())
 
+    def test_report_refresh_clears_selected_cache_before_run(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = self.write_config(temp_dir)
+            xueqiu_cache = Path(temp_dir) / "output" / "social" / "xueqiu" / "20260508.json"
+            news_cache = Path(temp_dir) / "output" / "cache" / "market_news" / "sample.json"
+            xueqiu_cache.parent.mkdir(parents=True)
+            news_cache.parent.mkdir(parents=True)
+            xueqiu_cache.write_text("{}", encoding="utf-8")
+            news_cache.write_text("{}", encoding="utf-8")
+            stream = io.StringIO()
+
+            with redirect_stdout(stream):
+                exit_code = main([
+                    "report",
+                    "--config",
+                    config_path,
+                    "--symbols",
+                    "600519.SH",
+                    "--no-archive",
+                    "--quiet",
+                    "--trade-date",
+                    "2026-05-08",
+                    "--refresh",
+                    "xueqiu,market_news",
+                ])
+
+            output = stream.getvalue()
+            self.assertEqual(exit_code, 0)
+            self.assertIn("refresh_targets:", output)
+            self.assertFalse(xueqiu_cache.exists())
+            self.assertFalse(news_cache.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

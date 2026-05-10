@@ -153,8 +153,8 @@ class MarkdownReportRenderer:
                 "",
                 "### KOL按标的观点聚合",
                 "",
-                "| 标的 | KOL重叠 | 样本类型 | 观点摘要 | 风险提示 | 样本链接 |",
-                "| --- | --- | --- | --- | --- | --- |",
+                "| 标的 | 观点 | KOL重叠 | 样本类型 | 观点摘要 | 风险提示 | 样本链接 |",
+                "| --- | --- | --- | --- | --- | --- | --- |",
             ])
             for item in xueqiu.get("ticker_views", [])[:10]:
                 llm_view = item.get("llm_view") or {}
@@ -175,6 +175,7 @@ class MarkdownReportRenderer:
                 )
                 lines.append(
                     f"| {item.get('symbol')} {item.get('name')} | "
+                    f"{xueqiu_sentiment_label(llm_view.get('sentiment') or item.get('sentiment'))} | "
                     f"{item.get('overlap_level')}（{item.get('kol_count')}位/{item.get('post_count')}帖） | "
                     f"{type_labels or '-'} | "
                     f"{clean_markdown_field(llm_view.get('view_summary') or fallback_summary or '暂无可读观点')} | "
@@ -566,6 +567,16 @@ def xueqiu_post_type_label(value: object) -> str:
         "unknown": "未知",
     }
     return labels.get(str(value or "unknown"), str(value or "未知"))
+
+
+def xueqiu_sentiment_label(value: object) -> str:
+    labels = {
+        "positive": "看多",
+        "negative": "看空",
+        "neutral": "中性",
+        "mixed": "分歧",
+    }
+    return labels.get(str(value or "neutral"), "中性")
 
 
 def format_xueqiu_type_counts(counts: dict) -> str:

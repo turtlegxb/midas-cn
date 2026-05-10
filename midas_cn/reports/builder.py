@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 import math
 
 from midas_cn.models import (
@@ -1155,7 +1155,14 @@ class DailyReportBuilder:
                 "confirmed_position_changes": [],
                 "overlaps": [],
             }
-        posts = list(getattr(snapshot, "posts", []) or [])
+        raw_posts = list(getattr(snapshot, "posts", []) or [])
+        cutoff = self._xueqiu_summary_cutoff(getattr(snapshot, "as_of", ""))
+        posts = [
+            post
+            for post in raw_posts
+            if getattr(post, "post_type", "") != "repost"
+            and self._xueqiu_post_in_window(getattr(post, "created_at", None), cutoff)
+        ]
         changes = list(getattr(snapshot, "position_changes", []) or [])
         post_type_counts = Counter(getattr(post, "post_type", "unknown") or "unknown" for post in posts)
         symbol_counter: Counter[str] = Counter()
@@ -1209,6 +1216,7 @@ class DailyReportBuilder:
                 "kol_count": len(symbol_kols.get(symbol, set())),
                 "kols": sorted(symbol_kols.get(symbol, set()))[:8],
                 "overlap_level": "多KOL重叠" if len(symbol_kols.get(symbol, set())) >= 2 else "单KOL提及",
+                "sentiment": self._xueqiu_rule_sentiment(symbol_posts.get(symbol, [])),
                 "in_opportunity": symbol in opportunity_symbols,
                 "in_stock_pool": symbol in pool_symbols,
                 "posts": symbol_posts.get(symbol, [])[:8],
@@ -1243,7 +1251,12 @@ class DailyReportBuilder:
         ]
         status = getattr(getattr(snapshot, "status", None), "value", str(getattr(snapshot, "status", "missing")))
         if status in {"success", "partial"} and (posts or changes):
-            summary = f"雪球跟踪获取到{len(posts)}条大V帖子、{len(changes)}条公开组合调仓；与选股池/机会重合{len(overlaps)}个。"
+            dropped = len(raw_posts) - len(posts)
+            summary = (
+                f"雪球跟踪获取到{len(raw_posts)}条大V帖子，按上个交易日至今且剔除转发后保留{len(posts)}条；"
+                f"公开组合调仓{len(changes)}条；与选股池/机会重合{len(overlaps)}个。"
+                + (f" 已剔除{dropped}条旧帖或转发。" if dropped else "")
+            )
         else:
             result = getattr(snapshot, "source_result", None)
             summary = f"雪球跟踪暂不可用：{getattr(result, 'error_message', None) or '未获取到公开帖子或组合调仓'}。"
@@ -1251,6 +1264,9 @@ class DailyReportBuilder:
             "summary": summary,
             "status": status,
             "post_count": len(posts),
+            "raw_post_count": len(raw_posts),
+            "filtered_post_count": len(posts),
+            "summary_cutoff": cutoff.isoformat() if cutoff else None,
             "post_type_counts": dict(post_type_counts),
             "position_change_count": len(changes),
             "mentioned_symbols": mentioned,
@@ -1265,7 +1281,7 @@ class DailyReportBuilder:
         ticker_views = []
         for item in xueqiu_tracking.get("ticker_views", []):
             insight = insights.get(item.get("symbol"))
-            ticker_views.append({**item, "llm_view": insight} if insight else item)
+            ticker_views.append({**item, "sentiment": insight.get("sentiment", item.get("sentiment")), "llm_view": insight} if insight else item)
         summary = xueqiu_tracking.get("summary", "")
         overlap_count = sum(1 for item in ticker_views if int(item.get("kol_count") or 0) >= 2)
         if overlap_count:
@@ -1275,6 +1291,45 @@ class DailyReportBuilder:
     def _truncate_text(self, text: object, limit: int) -> str:
         cleaned = " ".join(str(text or "").split())
         return cleaned[:limit]
+
+    def _xueqiu_summary_cutoff(self, as_of: object) -> datetime | None:
+        text = str(as_of or "").strip()
+        current = None
+        for fmt in ("%Y%m%d", "%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                current = datetime.strptime(text[:10], fmt)
+                break
+            except ValueError:
+                continue
+        if current is None:
+            return None
+        previous = current.date() - timedelta(days=1)
+        while previous.weekday() >= 5:
+            previous -= timedelta(days=1)
+        return datetime.combine(previous, datetime.min.time())
+
+    def _xueqiu_post_in_window(self, created_at: object, cutoff: datetime | None) -> bool:
+        if cutoff is None or not created_at:
+            return True
+        text = str(created_at)
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(text[:19], fmt) >= cutoff
+            except ValueError:
+                continue
+        return True
+
+    def _xueqiu_rule_sentiment(self, posts: list[dict]) -> str:
+        text = " ".join(str(post.get("text") or "") for post in posts).lower()
+        bearish = ["看空", "减仓", "卖出", "风险", "泡沫", "高估", "不宜", "一地鸡毛", "兑现", "回避", "下跌"]
+        bullish = ["看多", "加仓", "买入", "机会", "低估", "主升", "突破", "超预期", "受益", "上行", "看好"]
+        bear_score = sum(1 for word in bearish if word in text)
+        bull_score = sum(1 for word in bullish if word in text)
+        if bull_score > bear_score:
+            return "positive"
+        if bear_score > bull_score:
+            return "negative"
+        return "neutral"
 
     def _theme_row(self, item: dict) -> dict:
         symbols = item["symbols"][:5]
