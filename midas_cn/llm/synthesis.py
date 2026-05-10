@@ -280,6 +280,83 @@ class ReportSynthesisService:
             context={},
         )
 
+    def synthesize_xueqiu_ticker_views(self, ticker_views: list[dict[str, Any]]) -> tuple[dict[str, dict[str, str]], SourceResult]:
+        eligible = [item for item in ticker_views if item.get("symbol") and item.get("posts")]
+        if not eligible:
+            return {}, self._xueqiu_source_result(SourceStatus.MISSING, "规则雪球观点聚合", "没有可聚合的雪球个股观点")
+        if not self.enabled:
+            return {}, self._xueqiu_source_result(SourceStatus.MISSING, "规则雪球观点聚合", "未开启大模型复盘")
+        if self.client is None:
+            return {}, self._xueqiu_source_result(SourceStatus.MISSING, "规则雪球观点聚合", "未配置可用的大模型密钥")
+
+        try:
+            response = self.client.complete(self._xueqiu_ticker_messages(eligible), temperature=self.temperature)
+            parsed = _parse_json_object(response.content)
+            insights = _normalize_xueqiu_ticker_insights(parsed.get("items"))
+            if not insights:
+                raise ValueError("模型未返回有效雪球观点聚合")
+            return insights, self._xueqiu_source_result(SourceStatus.SUCCESS, f"{response.provider}:{response.model}", None)
+        except Exception as exc:
+            return {}, self._xueqiu_source_result(SourceStatus.FALLBACK, "规则雪球观点聚合", compact_llm_error(exc))
+
+    def _xueqiu_ticker_messages(self, ticker_views: list[dict[str, Any]]) -> list[dict[str, str]]:
+        context = {
+            "ticker_views": [
+                {
+                    "symbol": item.get("symbol"),
+                    "name": item.get("name"),
+                    "kol_count": item.get("kol_count"),
+                    "post_count": item.get("post_count"),
+                    "overlap_level": item.get("overlap_level"),
+                    "posts": [
+                        {
+                            "kol": post.get("kol"),
+                            "created_at": post.get("created_at"),
+                            "post_type": post.get("post_type"),
+                            "title": post.get("title"),
+                            "text": post.get("text"),
+                            "url": post.get("url"),
+                        }
+                        for post in list(item.get("posts") or [])[:6]
+                    ],
+                }
+                for item in eligible_ticker_views(ticker_views)[:15]
+            ]
+        }
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是A股和跨市场股票舆情分析师。只能基于用户提供的雪球帖子聚合观点。"
+                    "忽略与大盘、指数、个股或行业投资无关的生活、体育、闲聊内容。输出必须是JSON对象。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "请按ticker总结KOL观点。要求：\n"
+                    "1. 返回 items 数组，每项包含 symbol、view_summary、kol_overlap_summary、sentiment、risk_note 四个字段。\n"
+                    "2. view_summary 一句话，80字以内，概括该标的被提及的核心投资观点。\n"
+                    "3. 注意 post_type：short_post=短评，long_post=长帖，article=长文，repost=转发；转发观点必须降权，优先总结原发长文/长帖。\n"
+                    "4. kol_overlap_summary 说明是否有多个KOL重叠提及，以及重叠意味着主题热度、共识或分歧。\n"
+                    "5. sentiment 只能是 positive、neutral、negative、mixed。\n"
+                    "6. risk_note 一句话说明主要风险或信息不足。\n"
+                    "7. 不要编造帖子之外的信息，不要输出Markdown或多余字段。\n\n"
+                    f"结构化数据：{json.dumps(context, ensure_ascii=False, default=str)}"
+                ),
+            },
+        ]
+
+    def _xueqiu_source_result(self, status: SourceStatus, provider: str, error_message: str | None) -> SourceResult:
+        return SourceResult(
+            data="雪球KOL观点聚合",
+            source="大模型雪球解读服务",
+            provider=provider,
+            status=status,
+            error_message=error_message,
+            context={},
+        )
+
 
 def build_report_synthesis_service(config: dict) -> ReportSynthesisService:
     enabled = bool(config.get("enabled", False))
@@ -352,6 +429,47 @@ def _normalize_opportunity_news_insights(value: object) -> dict[str, dict[str, s
             "news_summary": _clean_one_line(item.get("news_summary"))[:80],
             "news_risk_label": risk_label if risk_label in valid_risks else "信息不足",
             "news_signal": signal if signal in valid_signals else "neutral",
+        }
+    return rows
+
+
+def eligible_ticker_views(ticker_views: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in ticker_views
+        if item.get("symbol") and item.get("posts") and _is_investment_related_view(item)
+    ]
+
+
+def _is_investment_related_view(item: dict[str, Any]) -> bool:
+    text = " ".join(
+        f"{post.get('title', '')} {post.get('text', '')}"
+        for post in list(item.get("posts") or [])[:8]
+        if isinstance(post, dict)
+    )
+    if item.get("symbol"):
+        return True
+    keywords = ["大盘", "指数", "个股", "行业", "板块", "估值", "业绩", "利润", "营收", "订单", "产能", "资本开支"]
+    return any(keyword in text for keyword in keywords)
+
+
+def _normalize_xueqiu_ticker_insights(value: object) -> dict[str, dict[str, str]]:
+    if not isinstance(value, list):
+        return {}
+    rows: dict[str, dict[str, str]] = {}
+    valid_sentiments = {"positive", "neutral", "negative", "mixed"}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip()
+        if not symbol:
+            continue
+        sentiment = str(item.get("sentiment") or "neutral").strip().lower()
+        rows[symbol] = {
+            "view_summary": _clean_one_line(item.get("view_summary"))[:100],
+            "kol_overlap_summary": _clean_one_line(item.get("kol_overlap_summary"))[:100],
+            "sentiment": sentiment if sentiment in valid_sentiments else "neutral",
+            "risk_note": _clean_one_line(item.get("risk_note"))[:100],
         }
     return rows
 

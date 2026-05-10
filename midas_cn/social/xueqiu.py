@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Any
 from urllib import error, parse, request
@@ -15,6 +16,7 @@ from midas_cn.models import SourceResult, SourceStatus
 
 
 SYMBOL_PATTERN = re.compile(r"(?:SH|SZ|BJ)?([03689]\d{5})(?:\.(?:SH|SZ|BJ))?", re.I)
+XUEQIU_TAG_PATTERN = re.compile(r"\$[^$()]*\(([A-Z]{1,6}|SH\d{6}|SZ\d{6}|BJ\d{6}|\d{5}|\d{6})\)\$?", re.I)
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,9 @@ class XueqiuPost:
     created_at: str | None
     url: str | None
     symbols: list[str] = field(default_factory=list)
+    post_type: str = "unclassified"
+    full_text: str = ""
+    full_raw_text_html: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
 
 
@@ -82,6 +87,9 @@ class XueqiuClient:
             {"cube_symbol": cube_symbol, "page": page, "count": count},
         )
 
+    def status_detail(self, status_id: str) -> dict[str, Any]:
+        return self._get_json("/statuses/show.json", {"id": status_id})
+
     def _get_json(self, path: str, params: dict[str, object]) -> dict[str, Any]:
         url = f"{self.base_url}{path}?{parse.urlencode(params)}"
         return self._get_json_url(url)
@@ -107,7 +115,8 @@ class XueqiuClient:
         if "json" not in content_type.lower():
             raise RuntimeError(_non_json_error(content_type, body))
         try:
-            return json.loads(body)
+            parsed = json.loads(body)
+            return json.loads(parsed) if isinstance(parsed, str) else parsed
         except json.JSONDecodeError as exc:
             raise RuntimeError(_non_json_error(content_type, body)) from exc
 
@@ -119,11 +128,20 @@ class XueqiuTracker:
     def fetch(self, as_of: str) -> XueqiuSnapshot:
         if not bool(self.config.get("enabled", False)):
             return self._missing(as_of, "未开启雪球跟踪")
-        if not (self.config.get("influencers") or self.config.get("portfolios")):
-            return self._missing(as_of, "未配置雪球大V或公开组合")
+        following_enabled = bool(self.config.get("following_enabled", True))
+        if not (following_enabled or self.config.get("influencers") or self.config.get("portfolios")):
+            return self._missing(as_of, "未配置雪球关注流、大V或公开组合")
+        token_env = str(self.config.get("token_env") or "XQ_A_TOKEN")
         cookie_env = str(self.config.get("cookie_env") or "XUEQIU_COOKIE")
+        token = os.getenv(token_env, "").strip()
         cookie = os.getenv(cookie_env, "").strip()
-        if not cookie:
+        if not token and cookie:
+            token = _extract_cookie_value(cookie, "xq_a_token")
+        if following_enabled and not token:
+            return self._missing(as_of, f"未配置环境变量 {token_env}，或 {cookie_env} 中缺少 xq_a_token")
+        if not cookie and token:
+            cookie = f"xq_a_token={token}; xqat={token}; xq_is_login=1"
+        if (self.config.get("influencers") or self.config.get("portfolios")) and not cookie:
             return self._missing(as_of, f"未配置环境变量 {cookie_env}")
 
         client = XueqiuClient(
@@ -136,6 +154,15 @@ class XueqiuTracker:
         posts: list[XueqiuPost] = []
         changes: list[XueqiuPositionChange] = []
         errors: list[str] = []
+        context: dict[str, str] = {}
+
+        if following_enabled:
+            try:
+                following_posts, following_context = self._fetch_following_posts(token, cutoff)
+                posts.extend(following_posts)
+                context.update(following_context)
+            except Exception as exc:
+                errors.append(f"关注流: {type(exc).__name__}: {exc}")
 
         for account in self.config.get("influencers", []) or []:
             try:
@@ -149,6 +176,7 @@ class XueqiuTracker:
             except Exception as exc:
                 errors.append(f"{portfolio.get('name') or portfolio.get('symbol')}: {type(exc).__name__}: {exc}")
 
+        posts = _dedupe_posts(posts)
         status = SourceStatus.SUCCESS if not errors else SourceStatus.PARTIAL if (posts or changes) else SourceStatus.FAILED
         result = SourceResult(
             data="雪球大V与持仓",
@@ -157,9 +185,84 @@ class XueqiuTracker:
             status=status,
             error_message="；".join(errors) if errors else None,
             checked_at=datetime.now().isoformat(),
-            context={"posts": str(len(posts)), "position_changes": str(len(changes))},
+            context={**context, "posts": str(len(posts)), "position_changes": str(len(changes))},
         )
         return XueqiuSnapshot(as_of=as_of, status=status, posts=posts, position_changes=changes, source_result=result)
+
+    def _fetch_following_posts(self, token: str, cutoff: datetime) -> tuple[list[XueqiuPost], dict[str, str]]:
+        script_path = Path(__file__).resolve().parents[2] / "scripts" / "xueqiu_fetcher.js"
+        if not script_path.exists():
+            raise FileNotFoundError(f"未找到雪球抓取脚本：{script_path}")
+        max_posts = int(self.config.get("following_max_posts", self.config.get("max_posts_per_account", 100)))
+        timeout = int(self.config.get("following_timeout_seconds", max(float(self.config.get("timeout_seconds", 30)), 30)))
+        completed = subprocess.run(
+            ["node", str(script_path), "following", str(max_posts)],
+            env={**os.environ, "XQ_A_TOKEN": token},
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise RuntimeError(detail[-800:] or f"node exited with {completed.returncode}")
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"雪球抓取脚本未返回JSON：{completed.stdout[:500]}") from exc
+        if payload.get("error"):
+            raise RuntimeError(str(payload.get("error")))
+        posts = []
+        for row in payload.get("posts", []):
+            if row.get("error"):
+                continue
+            post = self._post_from_following_row(row, cutoff)
+            if post is not None:
+                posts.append(post)
+        failures = payload.get("failures") or []
+        return posts, {
+            "following_mode": str(payload.get("mode") or "following"),
+            "following_source_endpoint": str(payload.get("source_endpoint") or ""),
+            "following_attempted_endpoints": ",".join(str(item) for item in payload.get("attempted_endpoints") or []),
+            "following_failures": json.dumps(failures, ensure_ascii=False)[:1000] if failures else "",
+            "following_requested": str(max_posts),
+            "following_returned": str(payload.get("count") or len(posts)),
+        }
+
+    def _post_from_following_row(self, row: dict[str, Any], cutoff: datetime) -> XueqiuPost | None:
+        created_at = _parse_xueqiu_time(row.get("created_at"))
+        if created_at and created_at < cutoff:
+            return None
+        title = _clean_html(row.get("title") or "")
+        text = _clean_html(row.get("full_text") or row.get("text") or row.get("description") or "")
+        raw_text = str(row.get("full_raw_text_html") or row.get("raw_text_html") or row.get("text") or "")
+        full_text = f"{title} {text}".strip()
+        user_id = str(row.get("user_id") or "")
+        post_id = str(row.get("id") or "")
+        return XueqiuPost(
+            account_name=str(row.get("screen_name") or user_id or "关注流"),
+            user_id=user_id,
+            post_id=post_id,
+            title=title,
+            text=text,
+            created_at=created_at.isoformat() if created_at else None,
+            url=str(row.get("link") or (f"https://xueqiu.com/{user_id}/{post_id}" if user_id and post_id else "")) or None,
+            symbols=extract_symbols(full_text),
+            full_text=text,
+            full_raw_text_html=raw_text,
+            metrics={
+                "reply_count": row.get("reply_count"),
+                "retweet_count": row.get("retweet_count"),
+                "like_count": row.get("fav_count") or row.get("like_count"),
+                "source": row.get("source"),
+                "raw_type": row.get("raw_type"),
+                "is_retweet": row.get("is_retweet"),
+                "retweeted_status_id": row.get("retweeted_status_id"),
+                "detail_fetched": row.get("detail_fetched"),
+                "detail_error": row.get("detail_error"),
+            },
+            post_type=str(row.get("post_type") or _classify_xueqiu_row(row)),
+        )
 
     def _fetch_posts(self, client: XueqiuClient, account: dict[str, Any], cutoff: datetime) -> list[XueqiuPost]:
         user_id = str(account.get("user_id") or "").strip()
@@ -181,6 +284,22 @@ class XueqiuTracker:
             title = _clean_html(row.get("title") or "")
             full_text = f"{title} {text}".strip()
             post_id = str(row.get("id") or row.get("target") or "")
+            post_type = _classify_xueqiu_row(row)
+            detail_error = None
+            detail_fetched = False
+            raw_text = str(row.get("text") or "")
+            if post_id and post_type in {"long_post", "article"}:
+                try:
+                    detail = client.status_detail(post_id)
+                    if isinstance(detail, dict):
+                        title = _clean_html(detail.get("title") or title)
+                        text = _clean_html(detail.get("full_text") or detail.get("fullText") or detail.get("longTextForIOS") or detail.get("text") or detail.get("description") or text)
+                        raw_text = str(detail.get("full_text") or detail.get("fullText") or detail.get("longTextForIOS") or detail.get("text") or raw_text)
+                        full_text = f"{title} {text}".strip()
+                        post_type = _classify_xueqiu_row(detail)
+                        detail_fetched = True
+                except Exception as exc:
+                    detail_error = str(exc)[:300]
             posts.append(
                 XueqiuPost(
                     account_name=str(account.get("name") or user_id),
@@ -191,10 +310,18 @@ class XueqiuTracker:
                     created_at=created_at.isoformat() if created_at else None,
                     url=f"https://xueqiu.com/{user_id}/{post_id}" if post_id else None,
                     symbols=extract_symbols(full_text),
+                    post_type=post_type,
+                    full_text=text,
+                    full_raw_text_html=raw_text,
                     metrics={
                         "reply_count": row.get("reply_count"),
                         "retweet_count": row.get("retweet_count"),
                         "like_count": row.get("like_count"),
+                        "raw_type": row.get("type"),
+                        "is_retweet": bool(row.get("retweeted_status")),
+                        "retweeted_status_id": _retweeted_status_id(row),
+                        "detail_fetched": detail_fetched,
+                        "detail_error": detail_error,
                     },
                 )
             )
@@ -304,6 +431,10 @@ def xueqiu_snapshot_from_dict(payload: dict[str, Any]) -> XueqiuSnapshot:
 
 def extract_symbols(text: str) -> list[str]:
     symbols = []
+    for match in XUEQIU_TAG_PATTERN.finditer(text):
+        normalized = normalize_symbol(match.group(1))
+        if normalized:
+            symbols.append(normalized)
     for match in SYMBOL_PATTERN.finditer(text):
         normalized = normalize_symbol(match.group(0))
         if normalized:
@@ -313,6 +444,10 @@ def extract_symbols(text: str) -> list[str]:
 
 def normalize_symbol(value: str) -> str:
     raw = value.upper().replace("$", "").strip()
+    if re.fullmatch(r"[A-Z]{1,6}", raw):
+        return f"{raw}.US"
+    if re.fullmatch(r"\d{5}", raw):
+        return f"{raw}.HK"
     match = SYMBOL_PATTERN.search(raw)
     if not match:
         return ""
@@ -324,6 +459,48 @@ def normalize_symbol(value: str) -> str:
     else:
         suffix = "SZ"
     return f"{code}.{suffix}"
+
+
+def _classify_xueqiu_row(row: dict[str, Any]) -> str:
+    if row.get("retweeted_status") or row.get("is_retweet"):
+        return "repost"
+    raw_type = str(row.get("type") if row.get("type") is not None else row.get("raw_type") or "")
+    if raw_type == "3" or row.get("title") or row.get("rawTitle"):
+        return "article"
+    if raw_type == "2":
+        return "long_post"
+    if raw_type == "0":
+        return "short_post"
+    return "unknown"
+
+
+def _retweeted_status_id(row: dict[str, Any]) -> object:
+    if row.get("retweet_status_id"):
+        return row.get("retweet_status_id")
+    retweeted_status = row.get("retweeted_status")
+    if isinstance(retweeted_status, dict):
+        return retweeted_status.get("id")
+    return row.get("retweeted_status_id")
+
+
+def _extract_cookie_value(cookie: str, name: str) -> str:
+    for part in cookie.split(";"):
+        key, _, value = part.strip().partition("=")
+        if key == name:
+            return value.strip()
+    return ""
+
+
+def _dedupe_posts(posts: list[XueqiuPost]) -> list[XueqiuPost]:
+    deduped: list[XueqiuPost] = []
+    seen: set[tuple[str, str]] = set()
+    for post in posts:
+        key = (post.user_id, post.post_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(post)
+    return deduped
 
 
 def _clean_html(value: str) -> str:

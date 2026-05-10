@@ -59,8 +59,12 @@ industry_enrich_timeout_seconds = 8
 [xueqiu]
 enabled = true
 archive_dir = "output/social/xueqiu"
+token_env = "XQ_A_TOKEN"
 cookie_env = "XUEQIU_COOKIE"
 lookback_days = 7
+following_enabled = true
+following_max_posts = 100
+following_timeout_seconds = 45
 max_posts_per_account = 50
 max_changes_per_portfolio = 50
 request_interval_seconds = 2

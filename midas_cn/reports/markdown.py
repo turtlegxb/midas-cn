@@ -134,16 +134,52 @@ class MarkdownReportRenderer:
             f"- 状态：{status_label(xueqiu.get('status', 'missing'))}",
             f"- 综合判断：{clean_markdown_field(xueqiu.get('summary'))}",
         ])
+        if xueqiu.get("post_type_counts"):
+            lines.append(f"- 类型分布：{format_xueqiu_type_counts(xueqiu.get('post_type_counts', {}))}")
         if xueqiu.get("overlaps"):
             lines.extend([
                 "",
-                "| 重合标的 | 名称 | 雪球热度 | 命中机会 | 命中选股池 |",
-                "| --- | --- | ---: | --- | --- |",
+                "| 重合标的 | 名称 | 帖子数 | KOL数 | KOL | 命中机会 | 命中选股池 |",
+                "| --- | --- | ---: | ---: | --- | --- | --- |",
             ])
             for item in xueqiu.get("overlaps", [])[:10]:
                 lines.append(
                     f"| {item.get('symbol')} | {item.get('name')} | {item.get('xueqiu_mentions')} | "
+                    f"{item.get('kol_count', 0)} | {', '.join(item.get('kols', [])[:4]) or '-'} | "
                     f"{yes_no(item.get('in_opportunity'))} | {yes_no(item.get('in_stock_pool'))} |"
+                )
+        if xueqiu.get("ticker_views"):
+            lines.extend([
+                "",
+                "### KOL按标的观点聚合",
+                "",
+                "| 标的 | KOL重叠 | 样本类型 | 观点摘要 | 风险提示 | 样本链接 |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ])
+            for item in xueqiu.get("ticker_views", [])[:10]:
+                llm_view = item.get("llm_view") or {}
+                posts = item.get("posts") or []
+                type_labels = " / ".join(
+                    xueqiu_post_type_label(post.get("post_type", "unknown"))
+                    for post in posts[:3]
+                )
+                links = " / ".join(
+                    f"[{post.get('kol') or '原帖'}]({post.get('url')})"
+                    for post in posts[:3]
+                    if post.get("url")
+                )
+                fallback_summary = "；".join(
+                    clean_markdown_field(post.get("text"))[:40]
+                    for post in posts[:2]
+                    if post.get("text")
+                )
+                lines.append(
+                    f"| {item.get('symbol')} {item.get('name')} | "
+                    f"{item.get('overlap_level')}（{item.get('kol_count')}位/{item.get('post_count')}帖） | "
+                    f"{type_labels or '-'} | "
+                    f"{clean_markdown_field(llm_view.get('view_summary') or fallback_summary or '暂无可读观点')} | "
+                    f"{clean_markdown_field(llm_view.get('risk_note') or '待更多帖子验证')} | "
+                    f"{links or '-'} |"
                 )
         if xueqiu.get("confirmed_position_changes"):
             lines.extend([
@@ -519,3 +555,26 @@ def latest_news_lines(items: list[dict], limit: int = 3) -> list[str]:
         suffix += "）"
         rows.append(f"  - {title_text}{suffix}")
     return rows if rows else ["  - 暂无"]
+
+
+def xueqiu_post_type_label(value: object) -> str:
+    labels = {
+        "short_post": "短评",
+        "long_post": "长帖",
+        "article": "长文",
+        "repost": "转发",
+        "unknown": "未知",
+    }
+    return labels.get(str(value or "unknown"), str(value or "未知"))
+
+
+def format_xueqiu_type_counts(counts: dict) -> str:
+    if not counts:
+        return "无"
+    order = ["short_post", "long_post", "article", "repost", "unknown"]
+    parts = [
+        f"{xueqiu_post_type_label(key)}{int(counts.get(key) or 0)}"
+        for key in order
+        if int(counts.get(key) or 0) > 0
+    ]
+    return "、".join(parts) if parts else "无"

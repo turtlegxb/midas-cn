@@ -22,10 +22,79 @@ midas_cn/
 └── universe/        # 股票池与 A 股代码规范化
 ```
 
+## 环境构建
+
+项目现在同时包含 Python 报告流水线和 Node/Playwright 雪球抓取器。服务器首次部署建议按下面顺序执行。
+
+### 1. Python 环境
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e '.[kline]'
+```
+
+说明：
+
+- `.[kline]` 会安装 `akshare`，用于腾讯、东方财富、新浪等行情和新闻源适配。
+- 如只跑单元测试或 mock 流程，也可以用 `python -m pip install -e .`。
+
+### 2. Node/Playwright 环境
+
+雪球关注流抓取依赖 Node.js、Playwright 和 stealth 插件：
+
+```bash
+npm install
+npx playwright install chromium
+```
+
+如果服务器是最小化 Linux 镜像，Playwright 可能还需要系统依赖：
+
+```bash
+npx playwright install-deps chromium
+```
+
+### 3. 环境变量
+
+复制示例文件后按需填写：
+
+```bash
+cp .env.example .env
+```
+
+至少建议配置：
+
+```bash
+export XQ_A_TOKEN="雪球 cookies 里的 xq_a_token"
+```
+
+可选配置：
+
+```bash
+export XUEQIU_COOKIE="完整雪球 Cookie，兼容旧的单用户 timeline/组合接口"
+export OPENAI_API_KEY="..."
+```
+
+说明：
+
+- `XQ_A_TOKEN` 是新的雪球关注流主配置，浏览器登录雪球后在 Cookies 中复制 `xq_a_token` 的值即可。
+- 如果同时配置 `XUEQIU_COOKIE`，系统会继续兼容老的公开组合和指定大V接口；未配置时会用 `XQ_A_TOKEN` 自动组装基础 Cookie。
+- LLM 不影响数据抓取。未配置 LLM 时，报告会使用规则回退；配置后会生成一句话复盘、宏观政策分析、个股新闻解读和雪球 KOL 按 ticker 聚合观点。
+
+### 4. 快速自检
+
+```bash
+node scripts/xueqiu_fetcher.js following 5
+.venv/bin/python -m unittest discover -s tests
+```
+
+在 macOS sandbox 或部分 CI 环境中，Playwright 可能因系统权限无法启动 Chromium；服务器正常 shell 环境一般不需要额外处理。
+
 ## 快速运行
 
 ```bash
-python3 -m midas_cn.interfaces.cli --symbols 600519.SH 300750.SZ
+.venv/bin/python -m midas_cn.interfaces.cli report --symbols 600519.SH 300750.SZ
 ```
 
 生成报告时 CLI 会在终端输出中文进度条和当前步骤说明；如需静默运行，可追加 `--quiet`。
@@ -33,11 +102,11 @@ python3 -m midas_cn.interfaces.cli --symbols 600519.SH 300750.SZ
 查看本地缓存状态：
 
 ```bash
-python3 -m midas_cn.interfaces.cli cache status
-python3 -m midas_cn.interfaces.cli cache clear --target K线
-python3 -m midas_cn.interfaces.cli sources check --symbol 600519.SH
-python3 -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --symbols 600519.SH
-python3 scripts/build_ths_sector_cache.py --pool-date 20260508 --skip-board-lists --quiet
+.venv/bin/python -m midas_cn.interfaces.cli cache status
+.venv/bin/python -m midas_cn.interfaces.cli cache clear --target K线
+.venv/bin/python -m midas_cn.interfaces.cli sources check --symbol 600519.SH
+.venv/bin/python -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --symbols 600519.SH
+.venv/bin/python scripts/build_ths_sector_cache.py --pool-date 20260508 --skip-board-lists --quiet
 ```
 
 默认使用 mock 数据源，可在无 API key 的环境里验证流程。后续接入真实行情、财务、公告、新闻和交易接口时，只需要实现 `midas_cn.data.providers.MarketDataProvider`。
@@ -52,7 +121,7 @@ python3 scripts/build_ths_sector_cache.py --pool-date 20260508 --skip-board-list
 安装可选依赖：
 
 ```bash
-pip install '.[kline]'
+python -m pip install -e '.[kline]'
 ```
 
 配置项：
@@ -71,6 +140,15 @@ opportunity_news_sort = "hybrid"
 [llm]
 enabled = true
 opportunity_news_enabled = true
+
+[xueqiu]
+enabled = true
+token_env = "XQ_A_TOKEN"
+cookie_env = "XUEQIU_COOKIE"
+following_enabled = true
+following_max_posts = 100
+following_timeout_seconds = 45
+lookback_days = 7
 
 [pools]
 build_if_missing = true
@@ -92,6 +170,32 @@ request_interval_seconds = 0.2
 
 同花顺行业/概念缓存建议由 cron 在报告前刷新，示例见 `config/crontab.example`。当前未接 iFinD 官方 API 时，脚本按 `--symbols` 或 `--pool-date` 中的股票逐只抓同花顺 F10 题材接口，并用已有行业源兜底；正式报告会优先读取该缓存补齐个股行业和概念，缓存缺失时再使用行情快照、巨潮和东方财富的有限兜底。
 
+### 雪球关注流与 KOL 观点
+
+项目内置 `scripts/xueqiu_fetcher.js`，用于抓取登录账号关注流。报告生成时 `XueqiuTracker` 会调用该脚本，默认抓最近 100 条关注动态。
+
+直接测试：
+
+```bash
+node scripts/xueqiu_fetcher.js following 100
+```
+
+抓取结果会区分帖子类型：
+
+- `short_post`：短评，雪球原始 `type = "0"`。
+- `long_post`：长帖，雪球原始 `type = "2"`。
+- `article`：长文，雪球原始 `type = "3"` 或带 `title/rawTitle`。
+- `repost`：转发，存在 `retweeted_status`。
+
+对 `long_post` 和 `article`，抓取器会额外请求 `statuses/show.json?id=<post_id>` 补齐原文，并输出：
+
+- `full_text`：完整纯文本。
+- `full_raw_text_html`：完整 HTML 原文。
+- `detail_fetched`：详情是否成功。
+- `detail_error`：详情失败原因。
+
+报告会按 ticker 聚合 KOL 观点，重点展示多位 KOL 重叠提及的标的。LLM 可用时，会基于 `full_text` 生成观点摘要、KOL overlap、情绪和风险提示；不可用时保留原帖摘要和链接作为回退。转发会保留但在 LLM 提示中降权，优先总结原发长文/长帖。
+
 带归档运行会同时生成：
 
 - `output/reports/chinese_report_<run_id>.md`
@@ -101,8 +205,9 @@ request_interval_seconds = 0.2
 ## 验证
 
 ```bash
-python3 -m unittest discover -s tests
-python3 -m compileall midas_cn scripts tests
+.venv/bin/python -m unittest discover -s tests
+.venv/bin/python -m compileall midas_cn scripts tests
+node --check scripts/xueqiu_fetcher.js
 ```
 
 ## 当前流水线

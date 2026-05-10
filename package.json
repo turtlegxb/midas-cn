@@ -1,0 +1,13 @@
+{
+  "name": "midas-cn",
+  "private": true,
+  "scripts": {
+    "install-xueqiu": "npx playwright install chromium",
+    "xueqiu:following": "node scripts/xueqiu_fetcher.js following 100"
+  },
+  "dependencies": {
+    "playwright": "^1.56.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}

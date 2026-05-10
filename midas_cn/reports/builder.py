@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 import math
 
@@ -120,6 +120,10 @@ class DailyReportBuilder:
         pool_analysis = self._stock_pool_analysis(stock_pools or [])
         theme_rotation = self._theme_rotation_analysis(stock_pools or [], report_opportunities)
         xueqiu_tracking = self._xueqiu_tracking_analysis(xueqiu_snapshot, stock_pools or [], report_opportunities)
+        xueqiu_insights, xueqiu_llm_result = self.llm_synthesis.synthesize_xueqiu_ticker_views(
+            xueqiu_tracking.get("ticker_views", [])
+        )
+        xueqiu_tracking = self._attach_xueqiu_insights(xueqiu_tracking, xueqiu_insights)
         market_regime_score = self._market_regime_score(calendar, market, index_state, theme_rotation, market_news_results or [])
         overall_review = {
             **overall_review,
@@ -177,6 +181,7 @@ class DailyReportBuilder:
                 synthesis.source_result,
                 getattr(xueqiu_snapshot, "source_result", None),
                 opportunity_news_synthesis_result,
+                xueqiu_llm_result,
             ),
             decisions=decisions,
             metadata={
@@ -188,6 +193,7 @@ class DailyReportBuilder:
                     synthesis.source_result,
                     getattr(xueqiu_snapshot, "source_result", None),
                     opportunity_news_synthesis_result,
+                    xueqiu_llm_result,
                 ),
                 "source_health": self._source_health(
                     opportunities,
@@ -196,6 +202,7 @@ class DailyReportBuilder:
                     synthesis.source_result,
                     getattr(xueqiu_snapshot, "source_result", None),
                     opportunity_news_synthesis_result,
+                    xueqiu_llm_result,
                 ),
                 "overall_review": overall_review,
                 "index_state": index_state,
@@ -214,6 +221,11 @@ class DailyReportBuilder:
                     "status": opportunity_news_synthesis_result.status.value,
                     "provider": opportunity_news_synthesis_result.provider,
                     "error_message": opportunity_news_synthesis_result.error_message,
+                },
+                "llm_xueqiu_ticker_views": {
+                    "status": xueqiu_llm_result.status.value,
+                    "provider": xueqiu_llm_result.provider,
+                    "error_message": xueqiu_llm_result.error_message,
                 },
                 "technical_coverage": self._technical_coverage(technical_profiles or {}),
                 "hidden_opportunities": {
@@ -764,6 +776,7 @@ class DailyReportBuilder:
         llm_result: SourceResult | None = None,
         xueqiu_result: SourceResult | None = None,
         opportunity_news_llm_result: SourceResult | None = None,
+        xueqiu_llm_result: SourceResult | None = None,
     ) -> list[dict[str, str]]:
         security_news_status = self._merge_source_status(
             item.evidence.get("news_source_status", {}) for item in opportunities
@@ -801,6 +814,8 @@ class DailyReportBuilder:
             rows.append({"data": llm_result.data, "source": llm_result.source, "status": llm_result.status.value})
         if xueqiu_result:
             rows.append({"data": xueqiu_result.data, "source": xueqiu_result.source, "status": xueqiu_result.status.value})
+        if xueqiu_llm_result:
+            rows.append({"data": xueqiu_llm_result.data, "source": xueqiu_llm_result.source, "status": xueqiu_llm_result.status.value})
         if opportunity_news_llm_result and not llm_news_status:
             rows.append(
                 {
@@ -855,6 +870,7 @@ class DailyReportBuilder:
         llm_result: SourceResult | None = None,
         xueqiu_result: SourceResult | None = None,
         opportunity_news_llm_result: SourceResult | None = None,
+        xueqiu_llm_result: SourceResult | None = None,
     ) -> list[dict]:
         security_results: list[dict] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -885,6 +901,8 @@ class DailyReportBuilder:
             results.extend(source_results_to_dicts([llm_result]))
         if xueqiu_result:
             results.extend(source_results_to_dicts([xueqiu_result]))
+        if xueqiu_llm_result:
+            results.extend(source_results_to_dicts([xueqiu_llm_result]))
         has_symbol_news_llm = any(result.get("data") == "个股新闻解读" for result in security_results)
         if opportunity_news_llm_result and not has_symbol_news_llm:
             results.extend(source_results_to_dicts([opportunity_news_llm_result]))
@@ -898,6 +916,7 @@ class DailyReportBuilder:
         llm_result: SourceResult | None = None,
         xueqiu_result: SourceResult | None = None,
         opportunity_news_llm_result: SourceResult | None = None,
+        xueqiu_llm_result: SourceResult | None = None,
     ) -> list[dict]:
         results = self._source_results(
             opportunities,
@@ -906,6 +925,7 @@ class DailyReportBuilder:
             llm_result,
             xueqiu_result,
             opportunity_news_llm_result,
+            xueqiu_llm_result,
         )
         grouped: dict[tuple[str, str], dict] = {}
         for result in results:
@@ -1131,16 +1151,32 @@ class DailyReportBuilder:
                 "post_count": 0,
                 "position_change_count": 0,
                 "mentioned_symbols": [],
+                "ticker_views": [],
                 "confirmed_position_changes": [],
                 "overlaps": [],
             }
         posts = list(getattr(snapshot, "posts", []) or [])
         changes = list(getattr(snapshot, "position_changes", []) or [])
+        post_type_counts = Counter(getattr(post, "post_type", "unknown") or "unknown" for post in posts)
         symbol_counter: Counter[str] = Counter()
+        symbol_kols: dict[str, set[str]] = defaultdict(set)
+        symbol_posts: dict[str, list[dict]] = defaultdict(list)
         symbol_names: dict[str, str] = {}
         for post in posts:
             for symbol in getattr(post, "symbols", []) or []:
                 symbol_counter[symbol] += 1
+                symbol_kols[symbol].add(getattr(post, "account_name", "") or getattr(post, "user_id", "") or "未知KOL")
+                symbol_posts[symbol].append(
+                    {
+                        "kol": getattr(post, "account_name", "") or getattr(post, "user_id", "") or "未知KOL",
+                        "user_id": getattr(post, "user_id", ""),
+                        "created_at": getattr(post, "created_at", None),
+                        "post_type": getattr(post, "post_type", "unknown") or "unknown",
+                        "title": getattr(post, "title", ""),
+                        "text": self._truncate_text(getattr(post, "full_text", "") or getattr(post, "text", ""), 1200),
+                        "url": getattr(post, "url", None),
+                    }
+                )
         for change in changes:
             symbol = getattr(change, "stock_symbol", "")
             if symbol:
@@ -1154,15 +1190,39 @@ class DailyReportBuilder:
             for entry in pool.entries
         }
         opportunity_symbols = {item.symbol: item.name for item in opportunities}
+        name_lookup = {**pool_symbols, **opportunity_symbols, **symbol_names}
         mentioned = [
-            {"symbol": symbol, "name": symbol_names.get(symbol) or pool_symbols.get(symbol) or opportunity_symbols.get(symbol) or symbol, "count": count}
+            {
+                "symbol": symbol,
+                "name": name_lookup.get(symbol) or symbol,
+                "count": count,
+                "kol_count": len(symbol_kols.get(symbol, set())),
+                "kols": sorted(symbol_kols.get(symbol, set()))[:6],
+            }
             for symbol, count in symbol_counter.most_common(12)
         ]
+        ticker_views = [
+            {
+                "symbol": symbol,
+                "name": name_lookup.get(symbol) or symbol,
+                "post_count": count,
+                "kol_count": len(symbol_kols.get(symbol, set())),
+                "kols": sorted(symbol_kols.get(symbol, set()))[:8],
+                "overlap_level": "多KOL重叠" if len(symbol_kols.get(symbol, set())) >= 2 else "单KOL提及",
+                "in_opportunity": symbol in opportunity_symbols,
+                "in_stock_pool": symbol in pool_symbols,
+                "posts": symbol_posts.get(symbol, [])[:8],
+            }
+            for symbol, count in symbol_counter.most_common(20)
+        ]
+        ticker_views.sort(key=lambda item: (int(item["kol_count"]), int(item["post_count"])), reverse=True)
         overlaps = [
             {
                 "symbol": item["symbol"],
                 "name": item["name"],
                 "xueqiu_mentions": item["count"],
+                "kol_count": item["kol_count"],
+                "kols": item["kols"],
                 "in_opportunity": item["symbol"] in opportunity_symbols,
                 "in_stock_pool": item["symbol"] in pool_symbols,
             }
@@ -1191,11 +1251,30 @@ class DailyReportBuilder:
             "summary": summary,
             "status": status,
             "post_count": len(posts),
+            "post_type_counts": dict(post_type_counts),
             "position_change_count": len(changes),
             "mentioned_symbols": mentioned,
+            "ticker_views": ticker_views,
             "confirmed_position_changes": confirmed_changes,
             "overlaps": overlaps,
         }
+
+    def _attach_xueqiu_insights(self, xueqiu_tracking: dict, insights: dict[str, dict[str, str]]) -> dict:
+        if not insights:
+            return xueqiu_tracking
+        ticker_views = []
+        for item in xueqiu_tracking.get("ticker_views", []):
+            insight = insights.get(item.get("symbol"))
+            ticker_views.append({**item, "llm_view": insight} if insight else item)
+        summary = xueqiu_tracking.get("summary", "")
+        overlap_count = sum(1 for item in ticker_views if int(item.get("kol_count") or 0) >= 2)
+        if overlap_count:
+            summary = f"{summary} 多KOL重叠标的{overlap_count}个，报告优先观察这些共识/分歧点。"
+        return {**xueqiu_tracking, "summary": summary, "ticker_views": ticker_views}
+
+    def _truncate_text(self, text: object, limit: int) -> str:
+        cleaned = " ".join(str(text or "").split())
+        return cleaned[:limit]
 
     def _theme_row(self, item: dict) -> dict:
         symbols = item["symbols"][:5]

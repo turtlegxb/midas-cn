@@ -45,6 +45,22 @@ class FakeNewsClient:
         )
 
 
+class FakeXueqiuClient:
+    provider = "openai"
+    model = "test-model"
+
+    def complete(self, messages, *, temperature=0.2):
+        return LLMResponse(
+            provider=self.provider,
+            model=self.model,
+            content=(
+                '{"items":[{"symbol":"688256.SH","view_summary":"多位KOL围绕国产AI算力和资本开支讨论寒武纪。",'
+                '"kol_overlap_summary":"2位KOL重叠提及，说明主题热度较高但观点仍需价格验证。",'
+                '"sentiment":"positive","risk_note":"风险在于AI叙事过热和业绩兑现要求提高。"}]}'
+            ),
+        )
+
+
 class LLMSynthesisTest(unittest.TestCase):
     def test_successful_synthesis_uses_client_output(self):
         service = ReportSynthesisService(client=FakeClient(), enabled=True)
@@ -132,6 +148,27 @@ class LLMSynthesisTest(unittest.TestCase):
             clean_markdown_field("## 标题\n- 第一条 | 第二条\n* 第三条"),
             "标题 第一条 / 第二条 第三条",
         )
+
+    def test_xueqiu_ticker_view_synthesis(self):
+        service = ReportSynthesisService(client=FakeXueqiuClient(), enabled=True)
+        insights, source_result = service.synthesize_xueqiu_ticker_views(
+            [
+                {
+                    "symbol": "688256.SH",
+                    "name": "寒武纪",
+                    "kol_count": 2,
+                    "post_count": 3,
+                    "posts": [
+                        {"kol": "KOL A", "text": "AI资本开支上调，关注寒武纪。"},
+                        {"kol": "KOL B", "text": "国产算力链仍有分歧。"},
+                    ],
+                }
+            ]
+        )
+
+        self.assertEqual(source_result.status, SourceStatus.SUCCESS)
+        self.assertEqual(insights["688256.SH"]["sentiment"], "positive")
+        self.assertIn("KOL", insights["688256.SH"]["kol_overlap_summary"])
 
 
 if __name__ == "__main__":
