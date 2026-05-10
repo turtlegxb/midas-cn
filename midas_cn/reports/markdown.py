@@ -174,7 +174,7 @@ class MarkdownReportRenderer:
                     if post.get("text")
                 )
                 lines.append(
-                    f"| {item.get('symbol')} {item.get('name')} | "
+                    f"| {format_symbol_name(item.get('symbol'), item.get('name'))} | "
                     f"{xueqiu_sentiment_label(llm_view.get('sentiment') or item.get('sentiment'))} | "
                     f"{item.get('overlap_level')}（{item.get('kol_count')}位/{item.get('post_count')}帖） | "
                     f"{type_labels or '-'} | "
@@ -190,11 +190,12 @@ class MarkdownReportRenderer:
             ])
             for item in xueqiu.get("confirmed_position_changes", [])[:10]:
                 lines.append(
-                    f"| {item.get('portfolio')} | {item.get('symbol')} {item.get('name')} | {item.get('action')} | "
+                    f"| {item.get('portfolio')} | {format_symbol_name(item.get('symbol'), item.get('name'))} | {item.get('action')} | "
                     f"{format_weight(item.get('before'))} | {format_weight(item.get('after'))} | {item.get('changed_at') or '未知'} |"
                 )
 
         lines.extend([
+            "",
             "## 机会评级",
         ])
         for grade in ("A", "B"):
@@ -577,6 +578,16 @@ def xueqiu_sentiment_label(value: object) -> str:
         "mixed": "分歧",
     }
     return labels.get(str(value or "neutral"), "中性")
+
+
+def format_symbol_name(symbol: object, name: object) -> str:
+    symbol_text = clean_markdown_field(symbol)
+    name_text = clean_markdown_field(name)
+    if not symbol_text:
+        return name_text or "-"
+    if not name_text or name_text == symbol_text:
+        return symbol_text
+    return f"{symbol_text} {name_text}"
 
 
 def format_xueqiu_type_counts(counts: dict) -> str:

@@ -5,15 +5,19 @@ from pathlib import Path
 
 from midas_cn.config import load_config
 from midas_cn.models import (
+    DailyReport,
+    MarketSnapshot,
     NewsItem,
     Opportunity,
     OpportunityGrade,
+    PositionPlan,
     QualityGate,
     QualityStatus,
     SourceResult,
     SourceStatus,
     StockPool,
     StockPoolEntry,
+    TradingCalendarCheck,
 )
 from midas_cn.orchestration.factory import build_trading_desk
 from midas_cn.pools.storage import StockPoolArchive
@@ -22,6 +26,56 @@ from midas_cn.reports.markdown import MarkdownReportRenderer
 
 
 class DailyReportTest(unittest.TestCase):
+    def test_xueqiu_table_deduplicates_symbol_name_and_separates_next_section(self):
+        report = DailyReport(
+            run_id="20260510_150000",
+            as_of=datetime(2026, 5, 10, 15, 0),
+            calendar=TradingCalendarCheck("2026-05-10", False, False, "weekend"),
+            quality_gate=QualityGate(QualityStatus.PASS),
+            market_snapshot=MarketSnapshot(datetime(2026, 5, 10, 15, 0), 0.1, 0.5, 0.5, 0.3),
+            action_summary=[],
+            opportunities=[],
+            position_plan=PositionPlan((0.2, 0.4), (0.0, 0.1), (0.5, 0.7), 0.05),
+            next_day_scenarios=[],
+            risk_warnings=[],
+            source_audit=[],
+            metadata={
+                "xueqiu_tracking": {
+                    "status": "success",
+                    "summary": "样本",
+                    "ticker_views": [
+                        {
+                            "symbol": "002475.SZ",
+                            "name": "002475.SZ",
+                            "sentiment": "positive",
+                            "overlap_level": "单KOL提及",
+                            "kol_count": 1,
+                            "post_count": 1,
+                            "posts": [{"post_type": "short_post", "text": "看好", "kol": "样本"}],
+                        }
+                    ],
+                    "confirmed_position_changes": [
+                        {
+                            "portfolio": "样本组合",
+                            "symbol": "002475.SZ",
+                            "name": "002475.SZ",
+                            "action": "加仓",
+                            "before": 1.0,
+                            "after": 2.0,
+                            "changed_at": "2026-05-10T15:00:00",
+                        }
+                    ],
+                }
+            },
+        )
+
+        rendered = MarkdownReportRenderer().render(report)
+
+        self.assertIn("| 002475.SZ | 看多 |", rendered)
+        self.assertNotIn("002475.SZ 002475.SZ", rendered)
+        self.assertIn("| 样本组合 | 002475.SZ | 加仓 |", rendered)
+        self.assertIn("2026-05-10T15:00:00 |\n\n## 机会评级", rendered)
+
     def test_pool_score_uses_saturation_instead_of_clamping_to_one(self):
         builder = DailyReportBuilder()
         pools = [
