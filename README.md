@@ -107,10 +107,14 @@ node scripts/xueqiu_fetcher.js following 5
 .venv/bin/python -m midas_cn.interfaces.cli sources check --symbol 600519.SH
 .venv/bin/python -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --symbols 600519.SH
 .venv/bin/python -m midas_cn.interfaces.cli report --trade-date 2026-05-08 --refresh xueqiu,news
+.venv/bin/python -m midas_cn.interfaces.cli review
+.venv/bin/python -m midas_cn.interfaces.cli review --report latest --horizon-days 1
 .venv/bin/python scripts/build_ths_sector_cache.py --pool-date 20260508 --skip-board-lists --quiet
 ```
 
 默认使用 mock 数据源，可在无 API key 的环境里验证流程。后续接入真实行情、财务、公告、新闻和交易接口时，只需要实现 `midas_cn.data.providers.MarketDataProvider`。
+
+复盘命令默认读取 `output/reports` 下最近 30 天的 `chinese_report_*.json`，逐份复盘日报机会池；也可以用 `--report latest` 只复盘最新日报，或传入某个日报 JSON 路径。复盘会计算日报产出后 1/3/5 个交易日收益、观察窗口最大回撤和回撤风险，并归档到 `output/reviews`。
 
 ### 单步刷新与重跑
 
@@ -262,4 +266,5 @@ node --check scripts/xueqiu_fetcher.js
 2. 按 A/B/C/D 与质量门禁应用仓位纪律
 3. 输出结构化 `TradeDecision`
 4. 归档决策 JSON
-5. 通过 `DecisionReviewEvaluator` 回填实际价格，形成复盘/回测闭环
+5. 通过 `DecisionReviewEvaluator` 回填实际价格，形成交易决策复盘闭环
+6. 通过 `ReportReviewEvaluator` 复盘最近 30 天日报机会池，统计 1/3/5 日收益和最大回撤风险

@@ -4,6 +4,7 @@ market = "A_SHARE"
 decision_time = "15:30"
 archive_dir = "output/decisions"
 report_archive_dir = "output/reports"
+review_archive_dir = "output/reviews"
 report_days = ["monday", "tuesday", "wednesday", "thursday"]
 
 [universe]

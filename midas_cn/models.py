@@ -219,3 +219,34 @@ class DecisionReview:
     hit_rate: float
     average_return: float
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReportReviewItem:
+    symbol: str
+    name: str
+    grade: str
+    entry_price: float
+    exit_price: float
+    return_pct: float
+    hit: bool
+    horizon_returns: dict[str, float] = field(default_factory=dict)
+    max_drawdown: float = 0.0
+    drawdown_risk: str = "低"
+    trigger: str = ""
+    invalidation: str = ""
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ReportReview:
+    report_run_id: str
+    reviewed_at: datetime
+    horizon: str
+    items: list[ReportReviewItem]
+    hit_rate: float
+    average_return: float
+    best_symbol: str | None = None
+    worst_symbol: str | None = None
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)

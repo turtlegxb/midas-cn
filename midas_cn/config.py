@@ -25,6 +25,11 @@ class AppConfig:
         return PROJECT_ROOT / configured
 
     @property
+    def review_archive_dir(self) -> Path:
+        configured = self.raw.get("system", {}).get("review_archive_dir", "output/reviews")
+        return PROJECT_ROOT / configured
+
+    @property
     def pool_archive_dir(self) -> Path:
         configured = self.raw.get("pools", {}).get("archive_dir", "output/pools")
         return PROJECT_ROOT / configured

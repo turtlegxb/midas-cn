@@ -3,9 +3,18 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import sys
+from pathlib import Path
 
 from midas_cn.config import load_config
 from midas_cn.orchestration.factory import build_trading_desk
+from midas_cn.review.evaluator import (
+    ReportReviewArchive,
+    ReportReviewEvaluator,
+    format_horizon_averages,
+    latest_report_path,
+    load_report_payload,
+    recent_report_paths,
+)
 from midas_cn.storage.cache_status import clear_cache, collect_cache_status, resolve_cache_targets
 
 
@@ -41,6 +50,14 @@ def build_parser() -> argparse.ArgumentParser:
     sources_check_parser = sources_subparsers.add_parser("check", help="Run a lightweight source check.")
     sources_check_parser.add_argument("--config", default="config/system.toml", help="Path to TOML config.")
     sources_check_parser.add_argument("--symbol", default=None, help="A-share symbol to check, e.g. 600519.SH.")
+    review_parser = subparsers.add_parser("review", help="Review a generated daily report.")
+    review_parser.add_argument("--config", default="config/system.toml", help="Path to TOML config.")
+    review_parser.add_argument("--report", default="last30", help="Report JSON path, latest, or last30.")
+    review_parser.add_argument("--days", type=int, default=30, help="Lookback days when --report last30.")
+    review_parser.add_argument("--horizon-days", type=int, default=1, help="Review horizon in trading bars.")
+    review_parser.add_argument("--entry", action="append", default=[], help="Entry price, e.g. 600519.SH=100.")
+    review_parser.add_argument("--exit", action="append", default=[], help="Exit price, e.g. 600519.SH=101.")
+    review_parser.add_argument("--no-archive", action="store_true", help="Run without writing review files.")
     add_report_args(parser)
     return parser
 
@@ -73,6 +90,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.sources_command == "check":
             return sources_check(args.config, args.symbol)
         raise SystemExit("sources requires a subcommand, e.g. sources check")
+    if args.command == "review":
+        return run_review(args)
     return run_report(args)
 
 
@@ -180,6 +199,83 @@ def sources_check(config_path: str, symbol: str | None = None) -> int:
     for name, status, summary in rows:
         print(f"| {name} | {status} | {summary.replace('|', '/')} |")
     return 0 if all(status != "failed" for _, status, _ in rows) else 1
+
+
+def run_review(args) -> int:
+    config = load_config(args.config)
+    report_paths = resolve_review_report_paths(config.report_archive_dir, args.report, int(args.days))
+    manual_entry = parse_price_pairs(args.entry)
+    manual_exit = parse_price_pairs(args.exit)
+    provider = None
+    if not manual_entry or not manual_exit:
+        provider = build_trading_desk(config).provider
+    evaluator = ReportReviewEvaluator()
+    archive = ReportReviewArchive(config.review_archive_dir)
+    reviews = []
+    for report_path in report_paths:
+        payload = load_report_payload(report_path)
+        review = evaluator.review(
+            payload,
+            entry_prices=manual_entry,
+            exit_prices=manual_exit,
+            provider=provider,
+            horizon_days=max(1, int(args.horizon_days)),
+        )
+        reviews.append(review)
+        print(f"report: {report_path}")
+        print(f"summary: {review.summary}")
+        print(f"hit_rate: {review.hit_rate:.1%}")
+        print(f"average_return: {review.average_return:.2%}")
+        if not args.no_archive:
+            json_path, markdown_path = archive.save(review)
+            print(f"review_json: {json_path}")
+            print(f"review_markdown: {markdown_path}")
+    aggregate = aggregate_reviews(reviews)
+    print(f"reviewed_reports: {len(reviews)}")
+    print(f"aggregate_hit_rate: {aggregate['hit_rate']:.1%}")
+    print(f"aggregate_average_return: {aggregate['average_return']:.2%}")
+    print(f"aggregate_horizon_average_returns: {format_horizon_averages(aggregate['horizon_average_returns'])}")
+    return 0
+
+
+def resolve_review_report_paths(report_dir: Path, report: str, days: int) -> list[Path]:
+    if report == "latest":
+        return [latest_report_path(report_dir)]
+    if report in {"last30", "recent"}:
+        paths = recent_report_paths(report_dir, days=max(1, days))
+        if not paths:
+            raise FileNotFoundError(f"最近{days}天没有找到日报JSON：{report_dir}")
+        return paths
+    return [Path(report).expanduser()]
+
+
+def aggregate_reviews(reviews) -> dict:
+    items = [item for review in reviews for item in review.items]
+    if not items:
+        return {"hit_rate": 0.0, "average_return": 0.0, "horizon_average_returns": {}}
+    horizon_average_returns = {}
+    for key in ("1d", "3d", "5d"):
+        values = [item.horizon_returns[key] for item in items if key in item.horizon_returns]
+        if values:
+            horizon_average_returns[key] = sum(values) / len(values)
+    return {
+        "hit_rate": sum(1 for item in items if item.hit) / len(items),
+        "average_return": sum(item.return_pct for item in items) / len(items),
+        "horizon_average_returns": horizon_average_returns,
+    }
+
+
+def parse_price_pairs(values: list[str]) -> dict[str, float]:
+    prices: dict[str, float] = {}
+    for value in values:
+        if "=" not in value:
+            raise SystemExit(f"price must be SYMBOL=PRICE: {value}")
+        symbol, price = value.split("=", 1)
+        try:
+            prices[symbol.strip()] = float(price)
+        except ValueError as exc:
+            raise SystemExit(f"invalid price: {value}") from exc
+    return prices
 
 
 if __name__ == "__main__":
