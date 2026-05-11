@@ -99,6 +99,7 @@ async function prepareXueqiuPage(page, timeoutMs) {
 }
 
 function extractStatuses(data) {
+  if (Array.isArray(data)) return data;
   if (Array.isArray(data.statuses)) return data.statuses;
   if (Array.isArray(data.home_timeline)) return data.home_timeline;
   if (Array.isArray(data.list)) return data.list;
