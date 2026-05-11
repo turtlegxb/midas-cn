@@ -6,7 +6,10 @@ function usage() {
   node scripts/xueqiu_fetcher.js following [count]
 
 Required env:
-  XQ_A_TOKEN=<xq_a_token from xueqiu.com cookies>`);
+  XQ_A_TOKEN=<xq_a_token from xueqiu.com cookies>
+Optional env:
+  XUEQIU_COOKIE=<full xueqiu.com cookie>
+  XQ_NAV_TIMEOUT_MS=<navigation timeout, default 60000>`);
 }
 
 function stripHtml(html) {
@@ -47,6 +50,52 @@ async function fetchJson(page, url) {
   } catch (error) {
     throw new Error(`Could not parse JSON: ${result.text.slice(0, 500)}`);
   }
+}
+
+function cookiesFromHeader(cookieHeader) {
+  return String(cookieHeader || '')
+    .split(';')
+    .map((part) => part.trim())
+    .filter((part) => part.includes('='))
+    .map((part) => {
+      const index = part.indexOf('=');
+      return {
+        name: part.slice(0, index).trim(),
+        value: part.slice(index + 1).trim(),
+        domain: '.xueqiu.com',
+        path: '/',
+        httpOnly: false,
+        secure: true,
+        sameSite: 'Lax'
+      };
+    })
+    .filter((cookie) => cookie.name && cookie.value);
+}
+
+async function prepareXueqiuPage(page, timeoutMs) {
+  await page.route('**/*', async (route) => {
+    const type = route.request().resourceType();
+    if (['image', 'media', 'font', 'stylesheet'].includes(type)) {
+      await route.abort();
+      return;
+    }
+    await route.continue();
+  });
+  const attempts = [
+    'https://xueqiu.com/statuses/home_timeline.json?page=1&count=1',
+    'https://xueqiu.com/S/SH000001',
+    'https://xueqiu.com/'
+  ];
+  const errors = [];
+  for (const url of attempts) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+      return { landing_url: url, landing_errors: errors };
+    } catch (error) {
+      errors.push(`${url}: ${String(error.message || error).slice(0, 180)}`);
+    }
+  }
+  throw new Error(`雪球页面初始化失败: ${errors.join(' | ')}`);
 }
 
 function extractStatuses(data) {
@@ -214,6 +263,7 @@ async function main() {
     process.exit(2);
   }
   const token = process.env.XQ_A_TOKEN;
+  const cookieHeader = process.env.XUEQIU_COOKIE || '';
   if (!token) {
     console.error(JSON.stringify({ error: 'XQ_A_TOKEN environment variable not set' }));
     process.exit(2);
@@ -230,16 +280,20 @@ async function main() {
     locale: 'zh-CN',
     timezoneId: 'Asia/Shanghai'
   });
-  const cookies = [
+  const cookieByName = new Map();
+  for (const cookie of cookiesFromHeader(cookieHeader)) cookieByName.set(cookie.name, cookie);
+  for (const cookie of [
     { name: 'xq_a_token', value: token, domain: '.xueqiu.com', path: '/', httpOnly: false, secure: true, sameSite: 'Lax' },
     { name: 'xqat', value: token, domain: '.xueqiu.com', path: '/', httpOnly: false, secure: true, sameSite: 'Lax' },
     { name: 'xq_is_login', value: '1', domain: '.xueqiu.com', path: '/', httpOnly: false, secure: true, sameSite: 'Lax' }
-  ];
+  ]) cookieByName.set(cookie.name, cookie);
+  const cookies = Array.from(cookieByName.values());
   if (process.env.XQ_UID) cookies.push({ name: 'u', value: process.env.XQ_UID, domain: '.xueqiu.com', path: '/', httpOnly: false, secure: true, sameSite: 'Lax' });
   await context.addCookies(cookies);
 
   const page = await context.newPage();
-  await page.goto('https://xueqiu.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const timeoutMs = Math.max(10000, Number.parseInt(process.env.XQ_NAV_TIMEOUT_MS || '60000', 10) || 60000);
+  const landing = await prepareXueqiuPage(page, timeoutMs);
   await page.waitForTimeout(3000);
   if (!process.env.XQ_UID) {
     const currentUserId = await getCurrentUserId(page);
@@ -257,14 +311,14 @@ async function main() {
       }
     }
     await browser.close();
-    console.log(JSON.stringify({ fetched_at: new Date().toISOString(), mode: 'timeline', count: posts.length, posts }, null, 2));
+    console.log(JSON.stringify({ fetched_at: new Date().toISOString(), mode: 'timeline', count: posts.length, ...landing, posts }, null, 2));
     return;
   }
 
   const count = Math.max(1, Number.parseInt(arg || countArg, 10) || 20);
   const result = await fetchFollowingTimeline(page, count, { originalOnly: false });
   await browser.close();
-  console.log(JSON.stringify({ fetched_at: new Date().toISOString(), mode: 'following', count: result.posts.length, ...result }, null, 2));
+  console.log(JSON.stringify({ fetched_at: new Date().toISOString(), mode: 'following', count: result.posts.length, ...landing, ...result }, null, 2));
 }
 
 main().catch((error) => {

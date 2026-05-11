@@ -214,6 +214,8 @@ request_interval_seconds = 0.2
 node scripts/xueqiu_fetcher.js following 100
 ```
 
+服务器环境建议同时配置 `XQ_A_TOKEN` 和完整 `XUEQIU_COOKIE`，脚本会把完整 Cookie 透传给 Playwright。若服务器访问雪球首页较慢，可在 `[xueqiu]` 中调高 `following_navigation_timeout_ms`；脚本会优先使用轻量 API/个股页初始化，减少首页资源加载导致的超时。老的单用户 timeline 接口容易触发阿里云 WAF，关注流抓取成功时可作为主路径使用。
+
 抓取结果会区分帖子类型：
 
 - `short_post`：短评，雪球原始 `type = "0"`。

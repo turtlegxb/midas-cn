@@ -157,7 +157,7 @@ class XueqiuTracker:
 
         if following_enabled:
             try:
-                following_posts, following_context = self._fetch_following_posts(token, cutoff)
+                following_posts, following_context = self._fetch_following_posts(token, cookie, cutoff)
                 posts.extend(following_posts)
                 context.update(following_context)
             except Exception as exc:
@@ -188,15 +188,16 @@ class XueqiuTracker:
         )
         return XueqiuSnapshot(as_of=as_of, status=status, posts=posts, position_changes=changes, source_result=result)
 
-    def _fetch_following_posts(self, token: str, cutoff: datetime) -> tuple[list[XueqiuPost], dict[str, str]]:
+    def _fetch_following_posts(self, token: str, cookie: str, cutoff: datetime) -> tuple[list[XueqiuPost], dict[str, str]]:
         script_path = Path(__file__).resolve().parents[2] / "scripts" / "xueqiu_fetcher.js"
         if not script_path.exists():
             raise FileNotFoundError(f"未找到雪球抓取脚本：{script_path}")
         max_posts = int(self.config.get("following_max_posts", self.config.get("max_posts_per_account", 100)))
         timeout = int(self.config.get("following_timeout_seconds", max(float(self.config.get("timeout_seconds", 30)), 30)))
+        navigation_timeout_ms = int(self.config.get("following_navigation_timeout_ms", 60_000))
         completed = subprocess.run(
             ["node", str(script_path), "following", str(max_posts)],
-            env={**os.environ, "XQ_A_TOKEN": token},
+            env={**os.environ, "XQ_A_TOKEN": token, "XUEQIU_COOKIE": cookie, "XQ_NAV_TIMEOUT_MS": str(navigation_timeout_ms)},
             text=True,
             capture_output=True,
             timeout=timeout,
