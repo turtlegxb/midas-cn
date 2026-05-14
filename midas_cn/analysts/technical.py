@@ -11,6 +11,14 @@ class TechnicalAnalyst(Analyst):
 
     def evaluate(self, security: SecurityContext, market: MarketSnapshot) -> AnalystView:
         profile = metadata_section(security, "technical")
+        if not profile:
+            return AnalystView(
+                name=self.name,
+                score=0.0,
+                confidence=0.10,
+                summary="技术面数据缺失，未用模拟指标替代。",
+                evidence={"source_status": "missing"},
+            )
         trend = float(profile.get("trend_strength", 0.0))
         ma_alignment = float(profile.get("ma_alignment", 0.0))
         rsi = float(profile.get("rsi", 50.0))
@@ -39,4 +47,3 @@ class TechnicalAnalyst(Analyst):
                 "resistance": profile.get("resistance"),
             },
         )
-

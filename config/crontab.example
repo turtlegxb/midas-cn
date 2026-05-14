@@ -1,4 +1,6 @@
 # Midas CN scheduled jobs. Replace /path/to/midas-cn with the repository path.
+# The CLI automatically loads /path/to/midas-cn/.env, so secrets do not need to be
+# exported in crontab.
 SHELL=/bin/zsh
 PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
 

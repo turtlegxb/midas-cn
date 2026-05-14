@@ -63,17 +63,19 @@ npx playwright install-deps chromium
 cp .env.example .env
 ```
 
+CLI 会自动读取仓库根目录的 `.env`；使用自定义 `--config` 时，也会读取配置文件同目录的 `.env`。已存在的进程环境变量优先级更高。
+
 至少建议配置：
 
 ```bash
-export XQ_A_TOKEN="雪球 cookies 里的 xq_a_token"
+XQ_A_TOKEN="雪球 cookies 里的 xq_a_token"
 ```
 
 可选配置：
 
 ```bash
-export XUEQIU_COOKIE="完整雪球 Cookie，兼容旧的单用户 timeline/组合接口"
-export OPENAI_API_KEY="..."
+XUEQIU_COOKIE="完整雪球 Cookie，兼容旧的单用户 timeline/组合接口"
+OPENAI_API_KEY="..."
 ```
 
 说明：

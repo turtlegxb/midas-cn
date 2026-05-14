@@ -21,6 +21,22 @@ from midas_cn.models import KLineBar, MarketSnapshot, NewsItem, SecurityContext,
 from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts, source_results_from_dicts
 
 
+def _average(values: list[float]) -> float:
+    return sum(values) / len(values) if values else 0.0
+
+
+def _standard_deviation(values: list[float]) -> float:
+    if len(values) < 2:
+        return 0.0
+    mean = _average(values)
+    variance = sum((value - mean) ** 2 for value in values) / len(values)
+    return variance ** 0.5
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
 class MarketDataProvider(ABC):
     @abstractmethod
     def get_market_snapshot(self, benchmarks: list[str]) -> MarketSnapshot:
@@ -414,66 +430,88 @@ class AkShareMarketDataProvider(MarketDataProvider):
         self.fallback = MockMarketDataProvider()
 
     def get_market_snapshot(self, benchmarks: list[str]) -> MarketSnapshot:
-        return self.fallback.get_market_snapshot(benchmarks)
+        profiles = []
+        errors = []
+        for symbol in benchmarks:
+            bars, result = self._get_daily_bars_with_result(symbol, self.lookback)
+            if len(bars) >= 2:
+                try:
+                    profiles.append({
+                        "symbol": symbol,
+                        "bars": bars,
+                        "technical": build_technical_profile(bars).as_dict(),
+                        "source": result.source,
+                    })
+                except Exception as exc:
+                    errors.append(f"{symbol}:{type(exc).__name__}:{exc}")
+            elif result.error_message:
+                errors.append(f"{symbol}:{result.error_message}")
+        if not profiles:
+            return MarketSnapshot(
+                as_of=datetime.now(),
+                benchmark_trend=0.0,
+                breadth_score=0.0,
+                liquidity_score=0.0,
+                volatility_score=1.0,
+                notes=["akshare market snapshot missing: no benchmark kline", *errors[:3]],
+            )
+        daily_returns = [self._bar_return(item["bars"], 1) for item in profiles]
+        five_day_returns = [self._bar_return(item["bars"], 5) for item in profiles]
+        trend_scores = [float(item["technical"].get("trend_strength") or 0.0) for item in profiles]
+        volume_ratios = [float(item["technical"].get("volume_ratio") or 1.0) for item in profiles]
+        recent_returns = [value for item in profiles for value in self._recent_returns(item["bars"], 20)]
+        avg_daily = _average(daily_returns)
+        avg_five_day = _average(five_day_returns)
+        up_ratio = sum(1 for value in daily_returns if value > 0) / len(daily_returns)
+        avg_volume_ratio = _average(volume_ratios)
+        realized_volatility = _standard_deviation(recent_returns)
+        benchmark_trend = _clamp(_average(trend_scores) * 0.45 + avg_five_day * 4.0 + avg_daily * 6.0, -1.0, 1.0)
+        breadth_score = _clamp(0.30 + up_ratio * 0.40 + avg_five_day * 5.0, 0.0, 1.0)
+        liquidity_score = _clamp(0.50 + (avg_volume_ratio - 1.0) * 0.25, 0.0, 1.0)
+        volatility_score = _clamp(realized_volatility * 18.0 + abs(avg_daily) * 6.0, 0.0, 1.0)
+        notes = [
+            f"akshare benchmarks: {', '.join(item['symbol'] for item in profiles)}",
+            f"avg_daily_change={avg_daily:.2%}",
+            f"avg_5d_change={avg_five_day:.2%}",
+        ]
+        if errors:
+            notes.append(f"benchmark_errors: {'; '.join(errors[:3])}")
+        return MarketSnapshot(
+            as_of=datetime.now(),
+            benchmark_trend=round(benchmark_trend, 3),
+            breadth_score=round(breadth_score, 3),
+            liquidity_score=round(liquidity_score, 3),
+            volatility_score=round(volatility_score, 3),
+            notes=notes,
+        )
 
     def get_security_context(self, symbol: str) -> SecurityContext:
-        base = self.fallback.get_security_context(symbol)
+        name, sector = self._security_identity(symbol)
         bars, kline_result = self._get_daily_bars_with_result(symbol, self.lookback)
-        if not bars:
-            news_results = self.get_security_news_results(
-                symbol,
-                getattr(self, "news_lookback_days", 2),
-                getattr(self, "max_news_items", 20),
-            )
-            news_items = flatten_source_items(news_results)
-            news_profile = build_news_profile(news_items)
-            news_profile["source_status"] = source_status_from_results(news_results)
-            news_profile["source_results"] = source_results_to_dicts(news_results)
-            return SecurityContext(
-                symbol=base.symbol,
-                name=base.name,
-                sector=base.sector,
-                price=base.price,
-                liquidity_score=base.liquidity_score,
-                metadata={
-                    **base.metadata,
-                    "provider": "akshare",
-                    "kline_source": "mock_fallback",
-                    "kline_error": kline_result.error_message,
-                    "kline_source_results": source_results_to_dicts([kline_result]),
-                    "news": {
-                        **base.metadata.get("news", {}),
-                        **news_profile,
-                    },
-                },
-            )
-        if not bars:
-            return base
-        technical = build_technical_profile(bars).as_dict()
         news_results = self.get_security_news_results(symbol, self.news_lookback_days, self.max_news_items)
         news_items = flatten_source_items(news_results)
         news_profile = build_news_profile(news_items)
         news_profile["source_status"] = source_status_from_results(news_results)
         news_profile["source_results"] = source_results_to_dicts(news_results)
+        technical = build_technical_profile(bars).as_dict() if len(bars) >= 2 else {}
+        price = float(technical.get("close") or (bars[-1].close if bars else 0.0))
+        volume_ratio = float(technical.get("volume_ratio") or 1.0)
+        liquidity_score = _clamp(0.50 + (volume_ratio - 1.0) * 0.25, 0.0, 1.0) if bars else 0.0
         return SecurityContext(
-            symbol=base.symbol,
-            name=base.name,
-            sector=base.sector,
-            price=technical["close"] or base.price,
-            liquidity_score=base.liquidity_score,
+            symbol=symbol,
+            name=name,
+            sector=sector,
+            price=price,
+            liquidity_score=round(liquidity_score, 3),
             metadata={
-                **base.metadata,
                 "provider": "akshare",
                 "kline_source": kline_result.provider,
                 "kline_source_results": source_results_to_dicts([kline_result]),
-                "technical": {
-                    **base.metadata.get("technical", {}),
-                    **technical,
-                },
-                "news": {
-                    **base.metadata.get("news", {}),
-                    **news_profile,
-                },
+                "technical": technical,
+                "news": news_profile,
+                "fundamental": {"source_status": "missing"},
+                "sentiment": {"source_status": "missing"},
+                "china_market": {"source_status": "missing"},
             },
         )
 
@@ -517,7 +555,6 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 return bars, result
             except Exception as exc:
                 errors.append(f"{provider}:{type(exc).__name__}:{exc}")
-        fallback = self.fallback.get_daily_bars_result(symbol, lookback)
         result = SourceResult(
             data="行情/K线",
             source="akshare_kline_chain",
@@ -525,11 +562,25 @@ class AkShareMarketDataProvider(MarketDataProvider):
             status=SourceStatus.FAILED,
             error_type="KLineSourceChainError",
             error_message="; ".join(errors),
-            fallback_source=fallback.source,
             checked_at=datetime.now().isoformat(),
             context={"symbol": symbol, "lookback": str(lookback)},
         )
         return [], result
+
+    def _security_identity(self, symbol: str) -> tuple[str, str]:
+        code = normalize_symbol_for_akshare(symbol)
+        try:
+            frame = self._call_with_timeout(lambda: self.akshare.stock_individual_info_em(symbol=code))
+            rows = self._rows_from_dataframe(frame)
+            info = {
+                str(row_value(row, "item", "项目", "指标") or "").strip(): row_value(row, "value", "值", "内容")
+                for row in rows
+            }
+            name = str(info.get("股票简称") or info.get("简称") or info.get("股票名称") or symbol).strip()
+            sector = str(info.get("行业") or info.get("所属行业") or "").strip()
+            return name or symbol, sector or "未分类"
+        except Exception:
+            return symbol, "未分类"
 
     def _fetch_daily_bars_eastmoney(self, symbol: str, lookback: int) -> list[KLineBar]:
         code = normalize_symbol_for_akshare(symbol)
@@ -571,6 +622,21 @@ class AkShareMarketDataProvider(MarketDataProvider):
             retries=self.kline_retries,
         )
         return [self._row_to_bar(row) for row in self._rows_from_dataframe(frame)][-lookback:]
+
+    def _bar_return(self, bars: list[KLineBar], periods: int) -> float:
+        if len(bars) <= periods:
+            periods = len(bars) - 1
+        if periods <= 0:
+            return 0.0
+        base = bars[-periods - 1].close
+        return (bars[-1].close / base - 1.0) if base else 0.0
+
+    def _recent_returns(self, bars: list[KLineBar], periods: int) -> list[float]:
+        window = bars[-(periods + 1):]
+        return [
+            (current.close / previous.close - 1.0) if previous.close else 0.0
+            for previous, current in zip(window, window[1:])
+        ]
 
     def _symbol_with_exchange_prefix(self, symbol: str) -> str:
         code, exchange = symbol.split(".", 1)
@@ -646,7 +712,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         lookback_days: int = 2,
         limit: int = 20,
     ) -> list[SourceResult]:
-        cache_key = f"{symbol}|{lookback_days}|{limit}|security"
+        cache_key = f"real_only_v2|{symbol}|{lookback_days}|{limit}|security"
         cache = getattr(self, "cache", None)
         if cache:
             cached = cache.load("security_news", cache_key)
@@ -680,13 +746,13 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 provider="akshare.stock_individual_notice_report",
                 context={"symbol": symbol},
                 fetch=lambda: self._notice_rows_to_items(
-                    self._rows_from_dataframe(
-                        self.akshare.stock_individual_notice_report(
+                    self._rows_or_empty_on_key_error(
+                        lambda: self.akshare.stock_individual_notice_report(
                             security=code,
                             symbol="全部",
                             begin_date=begin_date,
                             end_date=end_date,
-                        )
+                        ),
                     ),
                     "eastmoney_stock_notice",
                 ),
@@ -702,13 +768,13 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 provider="akshare.stock_zh_a_disclosure_report_cninfo",
                 context={"symbol": symbol},
                 fetch=lambda: self._notice_rows_to_items(
-                    self._rows_from_dataframe(
-                        self.akshare.stock_zh_a_disclosure_report_cninfo(
+                    self._rows_or_empty_on_key_error(
+                        lambda: self.akshare.stock_zh_a_disclosure_report_cninfo(
                             symbol=code,
                             market="沪深京",
                             start_date=begin_date,
                             end_date=end_date,
-                        )
+                        ),
                     ),
                     "cninfo_disclosure",
                 ),
@@ -717,24 +783,6 @@ class AkShareMarketDataProvider(MarketDataProvider):
             )
         )
 
-        if not any(result.items for result in results):
-            fallback_results = self.fallback.get_security_news_results(symbol, lookback_days, limit)
-            results = results + [
-                SourceResult(
-                    data="个股新闻/公告",
-                    source=result.source,
-                    provider=result.provider,
-                    status=SourceStatus.FALLBACK,
-                    items=result.items,
-                    fallback_source="mock_security_news",
-                    checked_at=datetime.now().isoformat(),
-                    context={"symbol": symbol},
-                )
-                for result in fallback_results
-            ]
-            if cache:
-                cache.save("security_news", cache_key, results)
-            return results
         if cache:
             cache.save("security_news", cache_key, results)
         return results
@@ -743,7 +791,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         return flatten_source_items(self.get_market_news_results(lookback_days, limit))
 
     def get_market_news_results(self, lookback_days: int = 2, limit: int = 50) -> list[SourceResult]:
-        cache_key = f"{lookback_days}|{limit}|market"
+        cache_key = f"real_only_v2|{lookback_days}|{limit}|market"
         cache = getattr(self, "cache", None)
         if cache:
             cached = cache.load("market_news", cache_key)
@@ -777,24 +825,6 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 limit=limit,
             ),
         ]
-        if not any(result.items for result in results):
-            fallback_results = self.fallback.get_market_news_results(lookback_days, limit)
-            results = results + [
-                SourceResult(
-                    data="市场新闻/政策",
-                    source=result.source,
-                    provider=result.provider,
-                    status=SourceStatus.FALLBACK,
-                    items=result.items,
-                    fallback_source="mock_market_news",
-                    checked_at=datetime.now().isoformat(),
-                    context={},
-                )
-                for result in fallback_results
-            ]
-            if cache:
-                cache.save("market_news", cache_key, results)
-            return results
         if cache:
             cache.save("market_news", cache_key, results)
         return results
@@ -837,6 +867,12 @@ class AkShareMarketDataProvider(MarketDataProvider):
             checked_at=checked_at,
             context=context,
         )
+
+    def _rows_or_empty_on_key_error(self, fetch) -> list[dict[str, Any]]:
+        try:
+            return self._rows_from_dataframe(fetch())
+        except KeyError:
+            return []
 
     def _news_rows_to_items(self, rows: list[dict[str, Any]], source: str, category: str) -> list[NewsItem]:
         items: list[NewsItem] = []

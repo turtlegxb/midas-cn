@@ -11,6 +11,14 @@ class ChinaMarketAnalyst(Analyst):
 
     def evaluate(self, security: SecurityContext, market: MarketSnapshot) -> AnalystView:
         profile = metadata_section(security, "china_market")
+        if profile.get("source_status") == "missing" or not profile:
+            return AnalystView(
+                name=self.name,
+                score=0.0,
+                confidence=0.10,
+                summary="A股资金与交易状态主数据缺失，未用模拟本土市场画像替代。",
+                evidence={"source_status": "missing"},
+            )
         northbound = float(profile.get("northbound_flow_score", 0.5))
         margin = float(profile.get("margin_flow_score", 0.5))
         policy_theme = float(profile.get("policy_theme_score", 0.0))
@@ -40,4 +48,3 @@ class ChinaMarketAnalyst(Analyst):
                 "flags": flags,
             },
         )
-

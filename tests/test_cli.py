@@ -1,4 +1,5 @@
 import io
+import os
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -134,6 +135,35 @@ enabled = false
             self.assertIn("refresh_targets:", output)
             self.assertFalse(xueqiu_cache.exists())
             self.assertFalse(news_cache.exists())
+
+    def test_config_loads_env_file_next_to_config_without_overriding_process_env(self):
+        from midas_cn.config import load_config
+
+        with TemporaryDirectory() as temp_dir:
+            config_path = self.write_config(temp_dir)
+            env_path = Path(temp_dir) / ".env"
+            env_path.write_text(
+                '\n'.join([
+                    'XQ_A_TOKEN="from-dotenv"',
+                    "XUEQIU_COOKIE=xq_a_token=from-cookie; other=1",
+                ]),
+                encoding="utf-8",
+            )
+            old_token = os.environ.pop("XQ_A_TOKEN", None)
+            old_cookie = os.environ.get("XUEQIU_COOKIE")
+            os.environ["XUEQIU_COOKIE"] = "already-set"
+            try:
+                load_config(config_path)
+                self.assertEqual(os.environ.get("XQ_A_TOKEN"), "from-dotenv")
+                self.assertEqual(os.environ.get("XUEQIU_COOKIE"), "already-set")
+            finally:
+                os.environ.pop("XQ_A_TOKEN", None)
+                if old_token is not None:
+                    os.environ["XQ_A_TOKEN"] = old_token
+                if old_cookie is None:
+                    os.environ.pop("XUEQIU_COOKIE", None)
+                else:
+                    os.environ["XUEQIU_COOKIE"] = old_cookie
 
 
 if __name__ == "__main__":

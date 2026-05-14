@@ -361,7 +361,7 @@ class AkShareStockPoolBuilder:
             if not fallback_error:
                 return (
                     normalize_fund_rows(fallback_rows),
-                    SourceStatus.FALLBACK,
+                    SourceStatus.SUCCESS,
                     "akshare.stock_individual_fund_flow_rank(今日)",
                     f"primary akshare.stock_main_fund_flow failed: {error}",
                 )
@@ -372,7 +372,7 @@ class AkShareStockPoolBuilder:
             if not fallback_error:
                 return (
                     normalize_fund_rows(fallback_rows),
-                    SourceStatus.FALLBACK,
+                    SourceStatus.SUCCESS,
                     "akshare.stock_fund_flow_individual(即时)",
                     error,
                 )
@@ -388,7 +388,7 @@ class AkShareStockPoolBuilder:
         if not fallback_error:
             return (
                 fallback_rows,
-                SourceStatus.FALLBACK,
+                SourceStatus.SUCCESS,
                 "sina.Market_Center.getHQNodeData",
                 f"primary akshare.stock_zh_a_spot_em failed: {error}",
             )

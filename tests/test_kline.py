@@ -56,7 +56,7 @@ class KLineTest(unittest.TestCase):
         self.assertEqual(bar.close, 10.5)
         self.assertEqual(bar.volume, 123456)
 
-    def test_akshare_provider_falls_back_when_remote_kline_fails(self):
+    def test_akshare_provider_marks_kline_failed_without_mock_fallback(self):
         provider = object.__new__(AkShareMarketDataProvider)
         provider.fallback = MockMarketDataProvider()
         provider.lookback = 90
@@ -74,8 +74,10 @@ class KLineTest(unittest.TestCase):
         security = provider.get_security_context("600519.SH")
 
         self.assertEqual(security.metadata["provider"], "akshare")
-        self.assertEqual(security.metadata["kline_source"], "mock_fallback")
-        self.assertIn("remote failed", security.metadata["kline_error"])
+        self.assertEqual(security.metadata["kline_source"], "akshare.stock_zh_a_hist_tx|stock_zh_a_hist|stock_zh_a_daily")
+        self.assertEqual(security.price, 0.0)
+        self.assertEqual(security.metadata["technical"], {})
+        self.assertEqual(security.metadata["fundamental"]["source_status"], "missing")
         self.assertEqual(security.metadata["kline_source_results"][0]["status"], SourceStatus.FAILED.value)
         self.assertIn("remote failed", security.metadata["kline_source_results"][0]["error_message"])
 
@@ -130,6 +132,39 @@ class KLineTest(unittest.TestCase):
         self.assertEqual(len(bars), 1)
         self.assertEqual(result.source, "akshare_stock_zh_a_hist")
         self.assertEqual(result.status, SourceStatus.SUCCESS)
+
+    def test_akshare_market_snapshot_uses_benchmark_kline_instead_of_mock(self):
+        provider = object.__new__(AkShareMarketDataProvider)
+        provider.fallback = MockMarketDataProvider()
+        provider.lookback = 90
+
+        def falling_bars(symbol, lookback):
+            bars = []
+            close = 100.0
+            for index in range(60):
+                close *= 1.003
+                if index == 59:
+                    close *= 0.98
+                bars.append(
+                    KLineBar(
+                        date=f"2026-03-{index + 1:02d}",
+                        open=close * 0.99,
+                        high=close * 1.01,
+                        low=close * 0.98,
+                        close=close,
+                        volume=1_000_000 + index * 10_000,
+                    )
+                )
+            return bars, type("Result", (), {"source": "test_kline", "error_message": None})()
+
+        provider._get_daily_bars_with_result = falling_bars
+
+        snapshot = provider.get_market_snapshot(["000300.SH", "000905.SH", "000852.SH"])
+
+        self.assertLess(snapshot.benchmark_trend, 0.05)
+        self.assertLess(snapshot.breadth_score, 0.4)
+        self.assertNotIn("mock benchmarks", " ".join(snapshot.notes))
+        self.assertIn("avg_daily_change", " ".join(snapshot.notes))
 
 
 if __name__ == "__main__":

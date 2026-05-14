@@ -118,7 +118,7 @@ class NewsSourceTest(unittest.TestCase):
         self.assertEqual(result.error_type, "TimeoutError")
         self.assertIn("timed out", result.error_message)
 
-    def test_akshare_security_news_results_are_per_source_with_fallback(self):
+    def test_akshare_security_news_results_do_not_use_mock_fallback(self):
         provider = object.__new__(AkShareMarketDataProvider)
         provider.fallback = MockMarketDataProvider()
         provider.timeout_seconds = 12
@@ -139,7 +139,7 @@ class NewsSourceTest(unittest.TestCase):
         self.assertEqual(statuses["eastmoney_stock_news"], SourceStatus.FAILED)
         self.assertEqual(statuses["eastmoney_stock_notice"], SourceStatus.FAILED)
         self.assertEqual(statuses["cninfo_disclosure"], SourceStatus.FAILED)
-        self.assertEqual(statuses["mock_security_news"], SourceStatus.FALLBACK)
+        self.assertNotIn("mock_security_news", statuses)
 
 
 if __name__ == "__main__":

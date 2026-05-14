@@ -177,12 +177,12 @@ class StockPoolBuilderTest(unittest.TestCase):
         pools = AkShareStockPoolBuilder(FundFlowFallbackAkShare(), top_n=2).build("20260508")
         by_name = {pool.name: pool for pool in pools}
 
-        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].status, SourceStatus.FALLBACK)
+        self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].status, SourceStatus.SUCCESS)
         self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].source, "akshare.stock_fund_flow_individual(即时)")
         self.assertIn("eastmoney fund source down", by_name[POOL_MAIN_NET_INFLOW].error_message or "")
         self.assertEqual([entry.symbol for entry in by_name[POOL_MAIN_NET_INFLOW].entries], ["000002.SZ", "600001.SH"])
         self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics["净额"], 320_000_000)
-        self.assertEqual(by_name[POOL_SMALL_FLOAT_NET_INFLOW].status, SourceStatus.FALLBACK)
+        self.assertEqual(by_name[POOL_SMALL_FLOAT_NET_INFLOW].status, SourceStatus.SUCCESS)
         self.assertEqual(
             by_name[POOL_SMALL_FLOAT_NET_INFLOW].source,
             "akshare.stock_fund_flow_individual(即时) + akshare.stock_zh_a_spot_em",

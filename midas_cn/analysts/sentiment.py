@@ -11,6 +11,14 @@ class SentimentAnalyst(Analyst):
 
     def evaluate(self, security: SecurityContext, market: MarketSnapshot) -> AnalystView:
         profile = metadata_section(security, "sentiment")
+        if profile.get("source_status") == "missing" or not profile:
+            return AnalystView(
+                name=self.name,
+                score=0.0,
+                confidence=0.10,
+                summary="社交情绪主数据缺失，未用模拟情绪画像替代。",
+                evidence={"source_status": "missing"},
+            )
         sentiment = float(profile.get("sentiment_score", 0.5))
         heat = float(profile.get("discussion_heat", 0.0))
         divergence = float(profile.get("kol_divergence", 0.0))
@@ -31,4 +39,3 @@ class SentimentAnalyst(Analyst):
                 "retail_chase_risk": chase_risk,
             },
         )
-

@@ -282,6 +282,8 @@ class TradingDesk:
     def _stock_pool_cache_needs_rebuild(self, stock_pools) -> bool:
         critical_names = {"main_net_inflow_top20", "small_float_net_inflow_top20"}
         for pool in stock_pools:
+            if pool.status == SourceStatus.FALLBACK:
+                return True
             if pool.name in critical_names and pool.status == SourceStatus.FAILED:
                 return True
         return False

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +10,7 @@ from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "system.toml"
+ENV_KEY_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -63,5 +66,47 @@ class AppConfig:
 
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
     config_path = Path(path)
+    _load_env_files(config_path)
     with config_path.open("rb") as file:
         return AppConfig(tomllib.load(file))
+
+
+def _load_env_files(config_path: Path) -> None:
+    config_env = config_path.resolve().parent / ".env"
+    candidates = [config_env]
+    project_env = PROJECT_ROOT / ".env"
+    if project_env != config_env:
+        candidates.append(project_env)
+    for env_path in candidates:
+        if env_path.exists():
+            _load_env_file(env_path)
+
+
+def _load_env_file(path: Path) -> None:
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not ENV_KEY_PATTERN.match(key):
+            continue
+        if not os.environ.get(key):
+            os.environ[key] = _parse_env_value(value.strip())
+
+
+def _parse_env_value(value: str) -> str:
+    quoted = False
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        quoted = True
+        quote = value[0]
+        value = value[1:-1]
+        if quote == '"':
+            value = value.encode("utf-8").decode("unicode_escape")
+    if not quoted and " #" in value:
+        value = value.split(" #", 1)[0].rstrip()
+    return value

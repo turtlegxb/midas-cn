@@ -11,6 +11,14 @@ class FundamentalAnalyst(Analyst):
 
     def evaluate(self, security: SecurityContext, market: MarketSnapshot) -> AnalystView:
         profile = metadata_section(security, "fundamental")
+        if profile.get("source_status") == "missing" or not profile:
+            return AnalystView(
+                name=self.name,
+                score=0.0,
+                confidence=0.10,
+                summary="基本面主数据缺失，未用模拟财务画像替代。",
+                evidence={"source_status": "missing"},
+            )
         roe = float(profile.get("roe", 0.10))
         revenue_growth = float(profile.get("revenue_growth", 0.0))
         profit_growth = float(profile.get("profit_growth", 0.0))
@@ -38,4 +46,3 @@ class FundamentalAnalyst(Analyst):
                 "dividend_yield": dividend_yield,
             },
         )
-
