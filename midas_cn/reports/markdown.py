@@ -95,6 +95,7 @@ class MarkdownReportRenderer:
             "## 板块轮动与主题深挖",
             "",
             f"- 轮动阶段：{theme_rotation.get('stage', '暂无')}",
+            f"- 数据源：{source_label(theme_rotation.get('source', 'stock_pool.metrics'))}",
             f"- 综合判断：{theme_rotation.get('summary', '暂无')}",
         ])
         if theme_rotation.get("main_themes"):

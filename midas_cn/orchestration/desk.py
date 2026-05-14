@@ -169,8 +169,8 @@ class TradingDesk:
             stock_pools,
             pool_technical_profiles,
         )
-        emit(11, "读取入选个股行业与概念映射")
-        stock_sector_mappings, stock_sector_mapping_result = self._load_stock_sector_mappings(report_opportunities)
+        emit(11, "读取入选个股与股票池行业概念映射")
+        stock_sector_mappings, stock_sector_mapping_result = self._load_stock_sector_mappings(report_opportunities, stock_pools)
         emit(12, "补充个股最新新闻")
         opportunity_news_results = self._fetch_opportunity_news(report_opportunities)
         emit(13, "计算指数技术状态")
@@ -307,8 +307,10 @@ class TradingDesk:
                 results[opportunity.symbol] = []
         return results
 
-    def _load_stock_sector_mappings(self, opportunities):
+    def _load_stock_sector_mappings(self, opportunities, stock_pools=None):
         symbols = [opportunity.symbol for opportunity in opportunities[:10]]
+        for pool in stock_pools or []:
+            symbols.extend(entry.symbol for entry in pool.entries)
         return self._load_stock_sector_mappings_for_symbols(symbols)
 
     def _load_stock_sector_mappings_for_symbols(self, symbols: list[str]):

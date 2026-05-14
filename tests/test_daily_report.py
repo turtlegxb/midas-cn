@@ -570,3 +570,47 @@ class DailyReportTest(unittest.TestCase):
                 ]
             )
         )
+
+    def test_theme_rotation_prefers_mongodb_sector_mapping(self):
+        builder = DailyReportBuilder()
+        pools = [
+            StockPool(
+                name="limit_up",
+                description="当日涨停，不含ST",
+                entries=[
+                    StockPoolEntry("300001.SZ", "样本科技", "当日涨停", 1, {"成交额": 300000000, "所属行业": "旧行业"})
+                ],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+        opportunities = [
+            Opportunity(
+                symbol="300001.SZ",
+                name="样本科技",
+                grade=OpportunityGrade.A,
+                score=0.82,
+                trigger="技术面",
+                invalidation="跌破支撑",
+                action="观察",
+                evidence={},
+            )
+        ]
+        mappings = {
+            "300001": {
+                "stock_code": "300001",
+                "stock_name": "样本科技",
+                "industry_sectors": ["软件开发"],
+                "concept_sectors": ["人工智能", "融资融券"],
+            }
+        }
+
+        rotation = builder._theme_rotation_analysis(pools, opportunities, mappings)
+        themes = [item["theme"] for item in rotation["main_themes"] + rotation["watch_themes"]]
+
+        self.assertEqual(rotation["source"], "mongodb.stock_sector_mapping")
+        self.assertIn("软件开发", themes)
+        self.assertIn("人工智能", themes)
+        self.assertNotIn("旧行业", themes)
+        self.assertNotIn("融资融券", themes)

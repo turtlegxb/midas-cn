@@ -44,6 +44,18 @@ GRADE_ORDER = {
     OpportunityGrade.D: 1,
 }
 
+GENERIC_CONCEPT_TAGS = {
+    "融资融券",
+    "转融券标的",
+    "沪股通",
+    "深股通",
+    "证金持股",
+    "MSCI概念",
+    "富时罗素",
+    "标普道琼斯A股",
+    "央企国企改革",
+}
+
 
 def min_grade(left: OpportunityGrade, right: OpportunityGrade) -> OpportunityGrade:
     return left if GRADE_ORDER[left] <= GRADE_ORDER[right] else right
@@ -121,7 +133,7 @@ class DailyReportBuilder:
         index_state = self._index_state(market, index_profiles or {})
         sentiment_breadth = self._market_sentiment_breadth(calendar, market, market_news_results or [])
         pool_analysis = self._stock_pool_analysis(stock_pools or [])
-        theme_rotation = self._theme_rotation_analysis(stock_pools or [], report_opportunities)
+        theme_rotation = self._theme_rotation_analysis(stock_pools or [], report_opportunities, stock_sector_mappings or {})
         selected_sector_mapping = self._selected_sector_mapping_summary(report_opportunities, stock_sector_mapping_result)
         xueqiu_tracking = self._xueqiu_tracking_analysis(xueqiu_snapshot, stock_pools or [], report_opportunities)
         xueqiu_insights, xueqiu_llm_result = self.llm_synthesis.synthesize_xueqiu_ticker_views(
@@ -1184,6 +1196,7 @@ class DailyReportBuilder:
         self,
         stock_pools: list[StockPool],
         opportunities: list[Opportunity],
+        stock_sector_mappings: dict[str, dict] | None = None,
     ) -> dict:
         usable_pools = [pool for pool in stock_pools if pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
         if not usable_pools:
@@ -1193,45 +1206,53 @@ class DailyReportBuilder:
                 "main_themes": [],
                 "watch_themes": [],
                 "risk_themes": [],
+                "source": "stock_pool.metrics",
             }
 
         theme_stats: dict[str, dict] = {}
         symbol_score = {item.symbol: item.score for item in opportunities}
+        opportunities_by_symbol = {item.symbol: item for item in opportunities}
+        mappings = stock_sector_mappings or {}
+        mapped_hits = 0
         for pool in usable_pools:
             for entry in pool.entries:
-                theme = str(entry.metrics.get("所属行业") or "").strip()
-                if not theme:
+                themes, source = self._theme_candidates_for_pool_entry(entry, opportunities_by_symbol, mappings)
+                if not themes:
                     continue
-                stat = theme_stats.setdefault(
-                    theme,
-                    {
-                        "theme": theme,
-                        "hits": 0,
-                        "limit_up": 0,
-                        "broken_limit_up": 0,
-                        "turnover": 0,
-                        "limit_down": 0,
-                        "symbols": [],
-                        "score": 0.0,
-                    },
-                )
-                stat["hits"] += 1
-                stat["symbols"].append({"symbol": entry.symbol, "name": entry.name, "pool": pool.name})
-                if pool.name == "limit_up":
-                    stat["limit_up"] += 1
-                    stat["score"] += 3.0
-                elif pool.name == "broken_limit_up":
-                    stat["broken_limit_up"] += 1
-                    stat["score"] += 1.0
-                elif pool.name == "turnover_top20":
-                    stat["turnover"] += 1
-                    stat["score"] += 1.2
-                elif pool.name == "limit_down":
-                    stat["limit_down"] += 1
-                    stat["score"] -= 2.0
-                else:
-                    stat["score"] += 1.5
-                stat["score"] += max(symbol_score.get(entry.symbol, 0.0), 0) * 0.35
+                if source == "mongodb.stock_sector_mapping":
+                    mapped_hits += 1
+                for theme in themes:
+                    stat = theme_stats.setdefault(
+                        theme,
+                        {
+                            "theme": theme,
+                            "hits": 0,
+                            "limit_up": 0,
+                            "broken_limit_up": 0,
+                            "turnover": 0,
+                            "limit_down": 0,
+                            "symbols": [],
+                            "score": 0.0,
+                            "source": source,
+                        },
+                    )
+                    stat["hits"] += 1
+                    stat["symbols"].append({"symbol": entry.symbol, "name": entry.name, "pool": pool.name})
+                    if pool.name == "limit_up":
+                        stat["limit_up"] += 1
+                        stat["score"] += 3.0
+                    elif pool.name == "broken_limit_up":
+                        stat["broken_limit_up"] += 1
+                        stat["score"] += 1.0
+                    elif pool.name == "turnover_top20":
+                        stat["turnover"] += 1
+                        stat["score"] += 1.2
+                    elif pool.name == "limit_down":
+                        stat["limit_down"] += 1
+                        stat["score"] -= 2.0
+                    else:
+                        stat["score"] += 1.5
+                    stat["score"] += max(symbol_score.get(entry.symbol, 0.0), 0) * 0.35
 
         ranked = sorted(theme_stats.values(), key=lambda item: (item["score"], item["hits"]), reverse=True)
         rows = [self._theme_row(item) for item in ranked]
@@ -1243,10 +1264,12 @@ class DailyReportBuilder:
         if main_themes:
             leader_text = "、".join(item["theme"] for item in main_themes[:3])
             stage = "主线扩散" if any(item["limit_up"] >= 2 for item in main_themes) else "轮动试探"
-            summary = f"板块线索集中在{leader_text}；当前更接近{stage}，次日重点看前排封单、后排换手和炸板修复。"
+            source_note = "MongoDB行业/概念映射" if mapped_hits else "选股池行业字段"
+            summary = f"板块线索基于{source_note}，集中在{leader_text}；当前更接近{stage}，次日重点看前排封单、后排换手和炸板修复。"
         elif watch_themes:
             stage = "快速轮动"
-            summary = "热点较分散，尚未形成清晰主线；优先观察换手承接，不追单日脉冲。"
+            source_note = "MongoDB行业/概念映射" if mapped_hits else "选股池行业字段"
+            summary = f"板块线索基于{source_note}，热点较分散，尚未形成清晰主线；优先观察换手承接，不追单日脉冲。"
         else:
             stage = "退潮观察"
             summary = "可用池未给出有效板块合力，先按退潮处理。"
@@ -1256,7 +1279,56 @@ class DailyReportBuilder:
             "main_themes": main_themes,
             "watch_themes": watch_themes,
             "risk_themes": risk_themes,
+            "source": "mongodb.stock_sector_mapping" if mapped_hits else "stock_pool.metrics",
+            "mapped_hits": mapped_hits,
         }
+
+    def _theme_candidates_for_pool_entry(
+        self,
+        entry: StockPoolEntry,
+        opportunities_by_symbol: dict[str, Opportunity],
+        stock_sector_mappings: dict[str, dict],
+    ) -> tuple[list[str], str]:
+        code = entry.symbol.split(".", 1)[0].zfill(6)
+        mapping = stock_sector_mappings.get(code) or stock_sector_mappings.get(entry.symbol)
+        themes = self._theme_candidates_from_mapping(mapping or {})
+        if themes:
+            return themes, "mongodb.stock_sector_mapping"
+
+        opportunity = opportunities_by_symbol.get(entry.symbol)
+        if opportunity:
+            themes = self._theme_candidates_from_mapping(opportunity.evidence.get("stock_sector_mapping") or {})
+            if themes:
+                return themes, "mongodb.stock_sector_mapping"
+            themes = self._unique_theme_candidates(
+                list(opportunity.evidence.get("industry_sectors") or [])
+                + list(opportunity.evidence.get("concept_sectors") or opportunity.evidence.get("concepts") or [])
+            )
+            if themes:
+                return themes[:8], "opportunity.evidence"
+
+        fallback_theme = str(entry.metrics.get("所属行业") or "").strip()
+        return ([fallback_theme], "stock_pool.metrics") if fallback_theme else ([], "missing")
+
+    def _theme_candidates_from_mapping(self, mapping: dict) -> list[str]:
+        industries = self._unique_theme_candidates(mapping.get("industry_sectors") or [])
+        concepts = self._unique_theme_candidates(
+            concept
+            for concept in mapping.get("concept_sectors") or []
+            if str(concept).strip() not in GENERIC_CONCEPT_TAGS
+        )
+        return self._unique_theme_candidates(industries[:2] + concepts[:6])
+
+    def _unique_theme_candidates(self, values) -> list[str]:
+        themes: list[str] = []
+        seen = set()
+        for value in values:
+            theme = str(value or "").strip()
+            if not theme or theme in seen:
+                continue
+            themes.append(theme)
+            seen.add(theme)
+        return themes
 
     def _xueqiu_tracking_analysis(
         self,
@@ -1508,6 +1580,7 @@ class DailyReportBuilder:
             "turnover": item["turnover"],
             "limit_down": item["limit_down"],
             "symbols": symbols,
+            "source": item.get("source", "stock_pool.metrics"),
             "judgement": self._theme_judgement(item),
         }
 
