@@ -141,6 +141,45 @@ class NewsSourceTest(unittest.TestCase):
         self.assertEqual(statuses["cninfo_disclosure"], SourceStatus.FAILED)
         self.assertNotIn("mock_security_news", statuses)
 
+    def test_security_news_source_chain_prioritizes_cninfo(self):
+        provider = object.__new__(AkShareMarketDataProvider)
+        provider.timeout_seconds = 12
+
+        class FakeAkshare:
+            def stock_zh_a_disclosure_report_cninfo(self, **kwargs):
+                return [{"公告标题": "巨潮公告", "公告日期": "2026-05-14"}]
+
+            def stock_individual_notice_report(self, **kwargs):
+                return [{"公告标题": "东方财富公告", "公告日期": "2026-05-14"}]
+
+            def stock_news_em(self, **kwargs):
+                return [{"新闻标题": "东方财富新闻", "发布时间": "2026-05-14 10:00:00"}]
+
+        provider.akshare = FakeAkshare()
+
+        results = provider.get_security_news_results("600519.SH", lookback_days=2, limit=10)
+
+        self.assertEqual([result.source for result in results], ["cninfo_disclosure", "eastmoney_stock_notice", "eastmoney_stock_news"])
+        self.assertEqual(results[0].items[0].title, "巨潮公告")
+
+    def test_market_news_source_chain_prioritizes_cctv(self):
+        provider = object.__new__(AkShareMarketDataProvider)
+        provider.timeout_seconds = 12
+
+        class FakeAkshare:
+            def news_cctv(self, **kwargs):
+                return [{"标题": "央视政策", "日期": "2026-05-14"}]
+
+            def stock_info_global_em(self):
+                return [{"标题": "东方财富市场新闻", "日期": "2026-05-14"}]
+
+        provider.akshare = FakeAkshare()
+
+        results = provider.get_market_news_results(lookback_days=2, limit=10)
+
+        self.assertEqual([result.source for result in results], ["cctv", "eastmoney_global"])
+        self.assertEqual(results[0].items[0].title, "央视政策")
+
 
 if __name__ == "__main__":
     unittest.main()

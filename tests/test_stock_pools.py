@@ -60,6 +60,21 @@ class FailingAkShare(FakeAkShare):
         raise ConnectionError("fund source down")
 
 
+class FailingLimitAkShare(FakeAkShare):
+    def stock_zh_a_spot_em(self):
+        return [
+            {"代码": "300001", "名称": "涨停一号", "涨跌幅": 10.0, "换手率": 12.5, "流通市值": 8_000_000_000, "成交额": 300_000_000},
+            {"代码": "300002", "名称": "跌停一号", "涨跌幅": -10.0, "换手率": 8.0, "流通市值": 6_000_000_000, "成交额": 200_000_000},
+            {"代码": "300003", "名称": "普通样本", "涨跌幅": 2.0, "换手率": 6.0, "流通市值": 5_000_000_000, "成交额": 100_000_000},
+        ]
+
+    def stock_zt_pool_em(self, date: str):
+        raise ConnectionError("eastmoney limit up down")
+
+    def stock_zt_pool_dtgc_em(self, date: str):
+        raise ConnectionError("eastmoney limit down down")
+
+
 class FundFlowFallbackAkShare(FakeAkShare):
     def stock_main_fund_flow(self, symbol: str):
         raise ConnectionError("eastmoney fund source down")
@@ -172,6 +187,18 @@ class StockPoolBuilderTest(unittest.TestCase):
         self.assertIn("fund source down", by_name[POOL_MAIN_NET_INFLOW].error_message or "")
         self.assertEqual(by_name[POOL_LIMIT_UP].status, SourceStatus.SUCCESS)
         self.assertEqual(len(by_name[POOL_LIMIT_UP].entries), 1)
+
+    def test_limit_pools_fall_back_to_spot_derived_rows(self):
+        pools = AkShareStockPoolBuilder(FailingLimitAkShare(), top_n=2).build("20260508")
+        by_name = {pool.name: pool for pool in pools}
+
+        self.assertEqual(by_name[POOL_LIMIT_UP].status, SourceStatus.FALLBACK)
+        self.assertEqual(by_name[POOL_LIMIT_UP].source, "derived.spot.limit_up(akshare.stock_zh_a_spot_em)")
+        self.assertIn("eastmoney limit up down", by_name[POOL_LIMIT_UP].error_message or "")
+        self.assertEqual([entry.symbol for entry in by_name[POOL_LIMIT_UP].entries], ["300001.SZ"])
+        self.assertEqual(by_name[POOL_LIMIT_DOWN].status, SourceStatus.FALLBACK)
+        self.assertEqual(by_name[POOL_LIMIT_DOWN].source, "derived.spot.limit_down(akshare.stock_zh_a_spot_em)")
+        self.assertEqual([entry.symbol for entry in by_name[POOL_LIMIT_DOWN].entries], ["300002.SZ"])
 
     def test_fund_flow_uses_individual_fallback_and_normalizes_columns(self):
         pools = AkShareStockPoolBuilder(FundFlowFallbackAkShare(), top_n=2).build("20260508")

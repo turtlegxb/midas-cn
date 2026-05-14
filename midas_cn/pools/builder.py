@@ -68,6 +68,8 @@ class AkShareStockPoolBuilder:
                 "akshare.stock_zt_pool_em",
                 lambda: self.akshare.stock_zt_pool_em(date=as_of),
                 as_of,
+                fallback_rows=self._derived_limit_rows(spot_rows, "up"),
+                fallback_source=f"derived.spot.limit_up({spot_source})",
             )
         )
         self._emit("拉取跌停池")
@@ -78,6 +80,8 @@ class AkShareStockPoolBuilder:
                 "akshare.stock_zt_pool_dtgc_em",
                 lambda: self.akshare.stock_zt_pool_dtgc_em(date=as_of),
                 as_of,
+                fallback_rows=self._derived_limit_rows(spot_rows, "down"),
+                fallback_source=f"derived.spot.limit_down({spot_source})",
             )
         )
         self._emit("拉取炸板池")
@@ -180,8 +184,25 @@ class AkShareStockPoolBuilder:
             error_message=error,
         )
 
-    def _limit_pool(self, name: str, description: str, source: str, fetch, as_of: str) -> StockPool:
+    def _limit_pool(
+        self,
+        name: str,
+        description: str,
+        source: str,
+        fetch,
+        as_of: str,
+        fallback_rows: list[dict[str, Any]] | None = None,
+        fallback_source: str | None = None,
+    ) -> StockPool:
         rows, error = self._fetch_rows(fetch)
+        status = SourceStatus.FAILED if error else SourceStatus.SUCCESS
+        source_name = source
+        error_message = error
+        if error and fallback_rows:
+            rows = fallback_rows
+            status = SourceStatus.FALLBACK
+            source_name = fallback_source or source
+            error_message = f"primary {source} failed: {error}"
         entries = self._ranked_entries(
             rows,
             reason=description,
@@ -192,11 +213,26 @@ class AkShareStockPoolBuilder:
             name=name,
             description=f"{description}，不含ST",
             entries=entries,
-            source=source,
-            status=SourceStatus.FAILED if error else SourceStatus.SUCCESS,
+            source=source_name,
+            status=status,
             as_of=as_of,
-            error_message=error,
+            error_message=error_message,
         )
+
+    def _derived_limit_rows(self, spot_rows: list[dict[str, Any]], direction: str) -> list[dict[str, Any]]:
+        rows = []
+        for row in spot_rows:
+            pct_change = to_number(row_value(row, "涨跌幅", "今日涨跌幅"))
+            if pct_change is None:
+                continue
+            if direction == "up" and pct_change < 9.8:
+                continue
+            if direction == "down" and pct_change > -9.8:
+                continue
+            item = dict(row)
+            item["涨跌幅"] = pct_change
+            rows.append(item)
+        return rows
 
     def _ranked_entries(
         self,

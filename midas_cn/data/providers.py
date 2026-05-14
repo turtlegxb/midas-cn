@@ -21,6 +21,24 @@ from midas_cn.models import KLineBar, MarketSnapshot, NewsItem, SecurityContext,
 from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts, source_results_from_dicts
 
 
+KLINE_SOURCE_CHAIN = (
+    ("akshare_stock_zh_a_hist_tx", "akshare.stock_zh_a_hist_tx", "tencent"),
+    ("akshare_stock_zh_a_hist", "akshare.stock_zh_a_hist", "eastmoney"),
+    ("akshare_stock_zh_a_daily", "akshare.stock_zh_a_daily", "sina"),
+)
+
+SECURITY_NEWS_SOURCE_CHAIN = (
+    "cninfo_disclosure",
+    "eastmoney_stock_notice",
+    "eastmoney_stock_news",
+)
+
+MARKET_NEWS_SOURCE_CHAIN = (
+    "cctv",
+    "eastmoney_global",
+)
+
+
 def _average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
@@ -535,12 +553,14 @@ class AkShareMarketDataProvider(MarketDataProvider):
                 bars = kline_bars_from_dicts(cached.get("bars", []))
                 return bars, source_results_from_dicts([cached["result"]])[0]
         errors: list[str] = []
-        for source, provider, fetcher in [
-            ("akshare_stock_zh_a_hist_tx", "akshare.stock_zh_a_hist_tx", self._fetch_daily_bars_tencent),
-            ("akshare_stock_zh_a_hist", "akshare.stock_zh_a_hist", self._fetch_daily_bars_eastmoney),
-            ("akshare_stock_zh_a_daily", "akshare.stock_zh_a_daily", self._fetch_daily_bars_sina),
-        ]:
+        fetchers = {
+            "tencent": self._fetch_daily_bars_tencent,
+            "eastmoney": self._fetch_daily_bars_eastmoney,
+            "sina": self._fetch_daily_bars_sina,
+        }
+        for source, provider, fetcher_name in KLINE_SOURCE_CHAIN:
             try:
+                fetcher = fetchers[fetcher_name]
                 bars = fetcher(symbol, lookback)
                 result = SourceResult(
                     data="行情/K线",
@@ -712,7 +732,7 @@ class AkShareMarketDataProvider(MarketDataProvider):
         lookback_days: int = 2,
         limit: int = 20,
     ) -> list[SourceResult]:
-        cache_key = f"real_only_v2|{symbol}|{lookback_days}|{limit}|security"
+        cache_key = f"source_chain_v1|{symbol}|{lookback_days}|{limit}|security"
         cache = getattr(self, "cache", None)
         if cache:
             cached = cache.load("security_news", cache_key)
@@ -721,53 +741,12 @@ class AkShareMarketDataProvider(MarketDataProvider):
         code = normalize_symbol_for_akshare(symbol)
         results: list[SourceResult] = []
 
-        results.append(
-            self._fetch_source(
-                data="个股新闻/公告",
-                source="eastmoney_stock_news",
-                provider="akshare.stock_news_em",
-                context={"symbol": symbol},
-                fetch=lambda: self._news_rows_to_items(
-                    self._rows_from_dataframe(self.akshare.stock_news_em(symbol=code)),
-                    "eastmoney_stock_news",
-                    "company",
-                ),
-                lookback_days=lookback_days,
-                limit=limit,
-            )
-        )
-
         end_date = datetime.now().strftime("%Y%m%d")
         begin_date = (datetime.now() - timedelta(days=max(lookback_days, 2))).strftime("%Y%m%d")
-        results.append(
-            self._fetch_source(
-                data="个股新闻/公告",
-                source="eastmoney_stock_notice",
-                provider="akshare.stock_individual_notice_report",
-                context={"symbol": symbol},
-                fetch=lambda: self._notice_rows_to_items(
-                    self._rows_or_empty_on_key_error(
-                        lambda: self.akshare.stock_individual_notice_report(
-                            security=code,
-                            symbol="全部",
-                            begin_date=begin_date,
-                            end_date=end_date,
-                        ),
-                    ),
-                    "eastmoney_stock_notice",
-                ),
-                lookback_days=lookback_days,
-                limit=limit,
-            )
-        )
-
-        results.append(
-            self._fetch_source(
-                data="个股新闻/公告",
-                source="cninfo_disclosure",
-                provider="akshare.stock_zh_a_disclosure_report_cninfo",
-                context={"symbol": symbol},
-                fetch=lambda: self._notice_rows_to_items(
+        fetch_specs = {
+            "cninfo_disclosure": {
+                "provider": "akshare.stock_zh_a_disclosure_report_cninfo",
+                "fetch": lambda: self._notice_rows_to_items(
                     self._rows_or_empty_on_key_error(
                         lambda: self.akshare.stock_zh_a_disclosure_report_cninfo(
                             symbol=code,
@@ -778,10 +757,43 @@ class AkShareMarketDataProvider(MarketDataProvider):
                     ),
                     "cninfo_disclosure",
                 ),
-                lookback_days=lookback_days,
-                limit=limit,
+            },
+            "eastmoney_stock_notice": {
+                "provider": "akshare.stock_individual_notice_report",
+                "fetch": lambda: self._notice_rows_to_items(
+                    self._rows_or_empty_on_key_error(
+                        lambda: self.akshare.stock_individual_notice_report(
+                            security=code,
+                            symbol="全部",
+                            begin_date=begin_date,
+                            end_date=end_date,
+                        ),
+                    ),
+                    "eastmoney_stock_notice",
+                ),
+            },
+            "eastmoney_stock_news": {
+                "provider": "akshare.stock_news_em",
+                "fetch": lambda: self._news_rows_to_items(
+                    self._rows_from_dataframe(self.akshare.stock_news_em(symbol=code)),
+                    "eastmoney_stock_news",
+                    "company",
+                ),
+            },
+        }
+        for source in SECURITY_NEWS_SOURCE_CHAIN:
+            spec = fetch_specs[source]
+            results.append(
+                self._fetch_source(
+                    data="个股新闻/公告",
+                    source=source,
+                    provider=str(spec["provider"]),
+                    context={"symbol": symbol},
+                    fetch=spec["fetch"],
+                    lookback_days=lookback_days,
+                    limit=limit,
+                )
             )
-        )
 
         if cache:
             cache.save("security_news", cache_key, results)
@@ -791,39 +803,41 @@ class AkShareMarketDataProvider(MarketDataProvider):
         return flatten_source_items(self.get_market_news_results(lookback_days, limit))
 
     def get_market_news_results(self, lookback_days: int = 2, limit: int = 50) -> list[SourceResult]:
-        cache_key = f"real_only_v2|{lookback_days}|{limit}|market"
+        cache_key = f"source_chain_v1|{lookback_days}|{limit}|market"
         cache = getattr(self, "cache", None)
         if cache:
             cached = cache.load("market_news", cache_key)
             if cached:
                 return source_results_from_dicts(cached)
-        results = [
-            self._fetch_source(
-                data="市场新闻/政策",
-                source="eastmoney_global",
-                provider="akshare.stock_info_global_em",
-                context={},
-                fetch=lambda: self._news_rows_to_items(
-                    self._rows_from_dataframe(self.akshare.stock_info_global_em()),
-                    "eastmoney_global",
-                    "market",
-                ),
-                lookback_days=lookback_days,
-                limit=limit,
-            ),
-            self._fetch_source(
-                data="市场新闻/政策",
-                source="cctv",
-                provider="akshare.news_cctv",
-                context={},
-                fetch=lambda: self._news_rows_to_items(
+        fetch_specs = {
+            "cctv": {
+                "provider": "akshare.news_cctv",
+                "fetch": lambda: self._news_rows_to_items(
                     self._rows_from_dataframe(self.akshare.news_cctv(date=datetime.now().strftime("%Y%m%d"))),
                     "cctv",
                     "policy",
                 ),
+            },
+            "eastmoney_global": {
+                "provider": "akshare.stock_info_global_em",
+                "fetch": lambda: self._news_rows_to_items(
+                    self._rows_from_dataframe(self.akshare.stock_info_global_em()),
+                    "eastmoney_global",
+                    "market",
+                ),
+            },
+        }
+        results = [
+            self._fetch_source(
+                data="市场新闻/政策",
+                source=source,
+                provider=str(fetch_specs[source]["provider"]),
+                context={},
+                fetch=fetch_specs[source]["fetch"],
                 lookback_days=lookback_days,
                 limit=limit,
-            ),
+            )
+            for source in MARKET_NEWS_SOURCE_CHAIN
         ]
         if cache:
             cache.save("market_news", cache_key, results)
