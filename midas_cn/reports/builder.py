@@ -56,6 +56,8 @@ GENERIC_CONCEPT_TAGS = {
     "央企国企改革",
 }
 
+TOP_THEME_LIMIT = 5
+
 
 def min_grade(left: OpportunityGrade, right: OpportunityGrade) -> OpportunityGrade:
     return left if GRADE_ORDER[left] <= GRADE_ORDER[right] else right
@@ -336,7 +338,7 @@ class DailyReportBuilder:
                 evidence["sector"] = industries[0]
                 evidence["industry_sectors"] = industries
             if concepts:
-                evidence["concepts"] = concepts[:12]
+                evidence["concepts"] = concepts[:TOP_THEME_LIMIT]
                 evidence["concept_sectors"] = concepts
             evidence["stock_sector_mapping"] = {
                 "source": "mongodb.stock_sector_mapping",
@@ -392,8 +394,8 @@ class DailyReportBuilder:
                 group["count"] += 1
                 group["symbols"].append({"symbol": opportunity.symbol, "name": opportunity.name, "grade": opportunity.grade.value, "score": opportunity.score})
 
-        industries = sorted(industry_groups.values(), key=lambda item: (-item["count"], item["theme"]))[:12]
-        concepts = sorted(concept_groups.values(), key=lambda item: (-item["count"], item["theme"]))[:15]
+        industries = sorted(industry_groups.values(), key=lambda item: (-item["count"], item["theme"]))[:TOP_THEME_LIMIT]
+        concepts = sorted(concept_groups.values(), key=lambda item: (-item["count"], item["theme"]))[:TOP_THEME_LIMIT]
         status = source_result.status.value if source_result else "missing"
         if mapped_symbols:
             top_industries = "、".join(item["theme"] for item in industries[:3])
@@ -1204,7 +1206,7 @@ class DailyReportBuilder:
         )[:10]
         themes = [
             {"theme": theme, "count": count}
-            for theme, count in theme_counts.most_common(8)
+            for theme, count in theme_counts.most_common(TOP_THEME_LIMIT)
         ]
         pool_rows = [
             {
@@ -1367,7 +1369,7 @@ class DailyReportBuilder:
                 + list(opportunity.evidence.get("concept_sectors") or opportunity.evidence.get("concepts") or [])
             )
             if themes:
-                return themes[:8], "opportunity.evidence"
+                return themes[:TOP_THEME_LIMIT], "opportunity.evidence"
 
         fallback_theme = str(entry.metrics.get("所属行业") or "").strip()
         return ([fallback_theme], "stock_pool.metrics") if fallback_theme else ([], "missing")
@@ -1379,7 +1381,7 @@ class DailyReportBuilder:
             for concept in mapping.get("concept_sectors") or []
             if str(concept).strip() not in GENERIC_CONCEPT_TAGS
         )
-        return self._unique_theme_candidates(industries[:2] + concepts[:6])
+        return self._unique_theme_candidates(industries[:2] + concepts)[:TOP_THEME_LIMIT]
 
     def _unique_theme_candidates(self, values) -> list[str]:
         themes: list[str] = []
@@ -1776,7 +1778,7 @@ class DailyReportBuilder:
                 "source": "选股池",
                 "pools": pool_names,
                 "sector": str(item["metrics"].get("所属行业") or "未分类"),
-                "concepts": list(item["metrics"].get("概念") or [])[:8] if isinstance(item["metrics"].get("概念"), list) else [],
+                "concepts": list(item["metrics"].get("概念") or [])[:TOP_THEME_LIMIT] if isinstance(item["metrics"].get("概念"), list) else [],
                 "metrics": item["metrics"],
                 "pool_score": round(item["score"], 3),
                 "technical_score": round(technical_score, 3),

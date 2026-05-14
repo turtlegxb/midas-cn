@@ -143,7 +143,7 @@ class MarkdownReportRenderer:
                 "| 行业 | 入选数 | 标的 |",
                 "| --- | ---: | --- |",
             ])
-            for item in selected_mapping.get("industries", [])[:12]:
+            for item in selected_mapping.get("industries", [])[:5]:
                 lines.append(f"| {item.get('theme')} | {item.get('count')} | {mapped_symbol_list(item.get('symbols', []))} |")
         if selected_mapping.get("concepts"):
             lines.extend([
@@ -151,7 +151,7 @@ class MarkdownReportRenderer:
                 "| 概念 | 入选数 | 标的 |",
                 "| --- | ---: | --- |",
             ])
-            for item in selected_mapping.get("concepts", [])[:15]:
+            for item in selected_mapping.get("concepts", [])[:5]:
                 lines.append(f"| {item.get('theme')} | {item.get('count')} | {mapped_symbol_list(item.get('symbols', []))} |")
         if selected_mapping.get("missing_symbols"):
             lines.append(f"- 未映射：{mapped_symbol_list(selected_mapping.get('missing_symbols', []))}")
@@ -492,7 +492,7 @@ def opportunity_card(item) -> list[str]:
         "",
         f"**{item.symbol} {item.name}｜{item.grade.value}｜{item.score:.3f}**",
         f"- 板块：{item.evidence.get('sector') or '未分类'}",
-        *([f"- 概念：{'、'.join(item.evidence.get('concepts', [])[:6])}"] if item.evidence.get("concepts") else []),
+        *([f"- 概念：{'、'.join(item.evidence.get('concepts', [])[:5])}"] if item.evidence.get("concepts") else []),
         f"- 入选：{pools}",
         f"- 评分：{score_breakdown}",
         *([f"- 降级原因：{'；'.join(downgrade_reasons)}"] if downgrade_reasons else []),

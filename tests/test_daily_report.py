@@ -289,6 +289,38 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(summary["concepts"][0]["theme"], "人工智能")
         self.assertEqual(summary["concepts"][0]["count"], 2)
 
+    def test_sector_mapping_and_theme_lists_are_limited_to_top_five(self):
+        builder = DailyReportBuilder()
+        opportunities = [
+            Opportunity(
+                symbol=f"30000{index}.SZ",
+                name=f"样本{index}",
+                grade=OpportunityGrade.B,
+                score=0.5,
+                trigger="观察。",
+                invalidation="跌破。",
+                action="跟踪。",
+                evidence={},
+            )
+            for index in range(1, 8)
+        ]
+        mappings = {
+            f"30000{index}": {
+                "stock_code": f"30000{index}",
+                "stock_name": f"样本{index}",
+                "industry_sectors": [f"行业{index}"],
+                "concept_sectors": [f"概念{concept}" for concept in range(1, 8)],
+            }
+            for index in range(1, 8)
+        }
+
+        enriched = builder._attach_stock_sector_mappings(opportunities, mappings)
+        summary = builder._selected_sector_mapping_summary(enriched, None)
+
+        self.assertEqual(len(enriched[0].evidence["concepts"]), 5)
+        self.assertEqual(len(summary["industries"]), 5)
+        self.assertEqual(len(summary["concepts"]), 5)
+
     def test_mongodb_sector_mapping_enriches_core_security_context(self):
         config = load_config("config/system.toml")
         config.raw.setdefault("mongodb", {})["enabled"] = False
