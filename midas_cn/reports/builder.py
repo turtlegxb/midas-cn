@@ -272,6 +272,7 @@ class DailyReportBuilder:
                 for result in news_results
                 for item in result.items
             ]
+            news_items = self._filter_opportunity_news_items(news_items)
             news_items = self._sort_news_items(news_items, opportunity.name, opportunity.symbol)[:10]
             score_breakdown = dict(opportunity.evidence.get("score_breakdown") or {})
             news_score = self._opportunity_news_score(news_items)
@@ -447,10 +448,11 @@ class DailyReportBuilder:
             reasons.append("命中跌停风险")
         if self._news_risk_score(news_items) < 0:
             max_grade = min_grade(max_grade, OpportunityGrade.B)
-            reasons.append("新闻含监管、问询、立案、减持、冻结等风险词")
+            reasons.append("新闻含监管、问询、立案、减持、冻结、异常波动等风险词")
         return max_grade, reasons
 
     def _sort_news_items(self, items: list[dict], company_name: str = "", symbol: str = "") -> list[dict]:
+        items = self._filter_opportunity_news_items(items)
         strategy = self.opportunity_news_sort
         if strategy == "published_at":
             return sorted(items, key=lambda item: str(item.get("published_at") or ""), reverse=True)
@@ -541,6 +543,7 @@ class DailyReportBuilder:
         return sum(1 for keyword in keywords if keyword in text)
 
     def _opportunity_news_score(self, items: list[dict]) -> float:
+        items = self._filter_opportunity_news_items(items)
         if not items:
             return 0.0
         positive = 0.0
@@ -556,10 +559,49 @@ class DailyReportBuilder:
         return max(-0.12, min(0.10, positive + negative))
 
     def _news_risk_score(self, items: list[dict]) -> float:
+        items = self._filter_opportunity_news_items(items)
         if not items:
             return 0.0
         text = " ".join(f"{item.get('title') or ''} {item.get('summary') or ''}" for item in items[:5])
         return -1.0 if any(keyword in text for keyword in self._news_negative_keywords()) else 0.0
+
+    def _filter_opportunity_news_items(self, items: list[dict]) -> list[dict]:
+        return [item for item in items if not self._is_market_stat_news(item)]
+
+    def _is_market_stat_news(self, item: dict) -> bool:
+        text = f"{item.get('title') or ''} {item.get('summary') or ''}"
+        keep_keywords = (
+            "异常波动",
+            "交易异常波动",
+            "股票交易异常波动",
+            "股价异常波动",
+            "严重异常波动",
+        )
+        if any(keyword in text for keyword in keep_keywords):
+            return False
+        stat_keywords = (
+            "龙虎榜",
+            "资金流入",
+            "资金流出",
+            "净流入",
+            "净流出",
+            "净买入",
+            "净卖出",
+            "主力资金",
+            "杠杆资金",
+            "融资客",
+            "特大单",
+            "大单",
+            "融资融券余额",
+            "融资余额",
+            "融券余额",
+            "活跃股榜单",
+            "换手率超",
+            "突破五日均线",
+            "站上半年线",
+            "连续5日净流入",
+        )
+        return any(keyword in text for keyword in stat_keywords)
 
     def _news_negative_keywords(self) -> tuple[str, ...]:
         return (
@@ -576,6 +618,11 @@ class DailyReportBuilder:
             "质押违约",
             "强制平仓",
             "控制权风险",
+            "异常波动",
+            "交易异常波动",
+            "股票交易异常波动",
+            "股价异常波动",
+            "严重异常波动",
         )
 
     def _market_mode(self, market: MarketSnapshot) -> str:

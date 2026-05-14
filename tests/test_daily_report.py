@@ -633,3 +633,51 @@ class DailyReportTest(unittest.TestCase):
 
         self.assertLess(builder._opportunity_news_score(items), 0)
         self.assertLess(builder._news_risk_score(items), 0)
+
+    def test_opportunity_news_filters_market_stat_items_but_keeps_abnormal_volatility(self):
+        builder = DailyReportBuilder()
+        items = [
+            {
+                "title": "样本科技龙虎榜数据05-14",
+                "summary": "主力资金净流入居前",
+                "source": "eastmoney_stock_news",
+                "category": "company",
+            },
+            {
+                "title": "电子行业资金流出榜：样本科技等净流出资金居前",
+                "source": "eastmoney_stock_news",
+                "category": "company",
+            },
+            {
+                "title": "72股获杠杆资金净买入超亿元",
+                "source": "eastmoney_stock_news",
+                "category": "company",
+            },
+            {
+                "title": "64股获融资客逆市净买入超亿元",
+                "source": "eastmoney_stock_news",
+                "category": "company",
+            },
+            {
+                "title": "样本科技关于股票交易异常波动的公告",
+                "source": "cninfo_disclosure",
+                "category": "announcement",
+            },
+            {
+                "title": "样本科技关于重大合同中标的公告",
+                "source": "cninfo_disclosure",
+                "category": "announcement",
+            },
+        ]
+
+        filtered = builder._filter_opportunity_news_items(items)
+        titles = [item["title"] for item in filtered]
+
+        self.assertNotIn("样本科技龙虎榜数据05-14", titles)
+        self.assertNotIn("电子行业资金流出榜：样本科技等净流出资金居前", titles)
+        self.assertNotIn("72股获杠杆资金净买入超亿元", titles)
+        self.assertNotIn("64股获融资客逆市净买入超亿元", titles)
+        self.assertIn("样本科技关于股票交易异常波动的公告", titles)
+        self.assertIn("样本科技关于重大合同中标的公告", titles)
+        self.assertLess(builder._opportunity_news_score(filtered), 0)
+        self.assertLess(builder._news_risk_score(filtered), 0)
