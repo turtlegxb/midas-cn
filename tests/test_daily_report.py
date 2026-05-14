@@ -614,3 +614,22 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("人工智能", themes)
         self.assertNotIn("旧行业", themes)
         self.assertNotIn("融资融券", themes)
+
+    def test_opportunity_news_score_treats_share_freeze_as_negative(self):
+        builder = DailyReportBuilder()
+        items = [
+            {
+                "title": "样本公司关于召开年度股东会的提示公告",
+                "source": "cninfo_disclosure",
+                "category": "announcement",
+            },
+            {
+                "title": "样本公司控股股东股份被轮候冻结",
+                "summary": "占公司总股本9.34%，暂不影响控制权",
+                "source": "eastmoney_stock_news",
+                "category": "company",
+            },
+        ]
+
+        self.assertLess(builder._opportunity_news_score(items), 0)
+        self.assertLess(builder._news_risk_score(items), 0)

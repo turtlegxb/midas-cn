@@ -447,7 +447,7 @@ class DailyReportBuilder:
             reasons.append("命中跌停风险")
         if self._news_risk_score(news_items) < 0:
             max_grade = min_grade(max_grade, OpportunityGrade.B)
-            reasons.append("新闻含监管、问询、立案、减持等风险词")
+            reasons.append("新闻含监管、问询、立案、减持、冻结等风险词")
         return max_grade, reasons
 
     def _sort_news_items(self, items: list[dict], company_name: str = "", symbol: str = "") -> list[dict]:
@@ -547,13 +547,11 @@ class DailyReportBuilder:
         negative = 0.0
         for item in items[:5]:
             text = f"{item.get('title') or ''} {item.get('summary') or ''}"
-            if item.get("category") == "announcement" or "notice" in str(item.get("source") or ""):
-                positive += 0.012
             if any(keyword in text for keyword in ("重大合同", "中标", "业绩预增", "回购", "增持", "政策支持")):
                 positive += 0.035
             elif any(keyword in text for keyword in ("业绩", "订单", "政策", "涨停", "突破")):
                 positive += 0.018
-            if any(keyword in text for keyword in ("监管", "问询", "立案", "处罚", "减持", "亏损", "终止")):
+            if any(keyword in text for keyword in self._news_negative_keywords()):
                 negative -= 0.055
         return max(-0.12, min(0.10, positive + negative))
 
@@ -561,7 +559,24 @@ class DailyReportBuilder:
         if not items:
             return 0.0
         text = " ".join(f"{item.get('title') or ''} {item.get('summary') or ''}" for item in items[:5])
-        return -1.0 if any(keyword in text for keyword in ("监管", "问询", "立案", "处罚", "减持", "亏损", "终止")) else 0.0
+        return -1.0 if any(keyword in text for keyword in self._news_negative_keywords()) else 0.0
+
+    def _news_negative_keywords(self) -> tuple[str, ...]:
+        return (
+            "监管",
+            "问询",
+            "立案",
+            "处罚",
+            "减持",
+            "亏损",
+            "终止",
+            "冻结",
+            "轮候冻结",
+            "司法冻结",
+            "质押违约",
+            "强制平仓",
+            "控制权风险",
+        )
 
     def _market_mode(self, market: MarketSnapshot) -> str:
         if market.benchmark_trend > 0.15 and market.breadth_score > 0.55:
