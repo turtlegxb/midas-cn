@@ -29,6 +29,13 @@ opportunity_news_sort = "hybrid"
 data_dir = "output/cache"
 ttl_seconds = 86400
 
+[mongodb]
+enabled = true
+uri_env = "MONGODB_URI"
+database = "sunny_day"
+collection = "stock_sector_mapping"
+timeout_ms = 8000
+
 [ths_cache]
 path = "output/cache/ths_sector/sector_cache.json"
 ttl_seconds = 86400

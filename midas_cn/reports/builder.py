@@ -92,6 +92,8 @@ class DailyReportBuilder:
         opportunity_news_results: dict[str, list[SourceResult]] | None = None,
         technical_profiles: dict[str, dict] | None = None,
         index_profiles: dict[str, dict] | None = None,
+        stock_sector_mappings: dict[str, dict] | None = None,
+        stock_sector_mapping_result: SourceResult | None = None,
     ) -> DailyReport:
         report_opportunities, hidden_opportunities = self.rank_report_opportunities(
             opportunities,
@@ -111,6 +113,7 @@ class DailyReportBuilder:
             + visible_opportunities[10:]
         )
         report_opportunities = visible_opportunities[:10]
+        report_opportunities = self._attach_stock_sector_mappings(report_opportunities, stock_sector_mappings or {})
         report_opportunities, opportunity_news_synthesis_result = self.llm_synthesis.synthesize_opportunity_news(report_opportunities)
         grade_counts = Counter(item.grade.value for item in report_opportunities)
         hidden_count = len(hidden_opportunities)
@@ -119,6 +122,7 @@ class DailyReportBuilder:
         sentiment_breadth = self._market_sentiment_breadth(calendar, market, market_news_results or [])
         pool_analysis = self._stock_pool_analysis(stock_pools or [])
         theme_rotation = self._theme_rotation_analysis(stock_pools or [], report_opportunities)
+        selected_sector_mapping = self._selected_sector_mapping_summary(report_opportunities, stock_sector_mapping_result)
         xueqiu_tracking = self._xueqiu_tracking_analysis(xueqiu_snapshot, stock_pools or [], report_opportunities)
         xueqiu_insights, xueqiu_llm_result = self.llm_synthesis.synthesize_xueqiu_ticker_views(
             xueqiu_tracking.get("ticker_views", [])
@@ -182,6 +186,7 @@ class DailyReportBuilder:
                 getattr(xueqiu_snapshot, "source_result", None),
                 opportunity_news_synthesis_result,
                 xueqiu_llm_result,
+                stock_sector_mapping_result,
             ),
             decisions=decisions,
             metadata={
@@ -194,6 +199,7 @@ class DailyReportBuilder:
                     getattr(xueqiu_snapshot, "source_result", None),
                     opportunity_news_synthesis_result,
                     xueqiu_llm_result,
+                    stock_sector_mapping_result,
                 ),
                 "source_health": self._source_health(
                     opportunities,
@@ -203,6 +209,7 @@ class DailyReportBuilder:
                     getattr(xueqiu_snapshot, "source_result", None),
                     opportunity_news_synthesis_result,
                     xueqiu_llm_result,
+                    stock_sector_mapping_result,
                 ),
                 "overall_review": overall_review,
                 "index_state": index_state,
@@ -210,6 +217,7 @@ class DailyReportBuilder:
                 "market_regime_score": market_regime_score,
                 "stock_pool_analysis": pool_analysis,
                 "theme_rotation": theme_rotation,
+                "selected_sector_mapping": selected_sector_mapping,
                 "xueqiu_tracking": xueqiu_tracking,
                 "macro_policy_analysis": synthesis.macro_policy_analysis,
                 "llm_synthesis": {
@@ -293,6 +301,104 @@ class DailyReportBuilder:
                 )
             )
         return updated
+
+    def _attach_stock_sector_mappings(
+        self,
+        opportunities: list[Opportunity],
+        mappings: dict[str, dict],
+    ) -> list[Opportunity]:
+        if not opportunities or not mappings:
+            return opportunities
+        updated = []
+        for opportunity in opportunities:
+            code = opportunity.symbol.split(".", 1)[0].zfill(6)
+            mapping = mappings.get(code) or mappings.get(opportunity.symbol)
+            if not mapping:
+                updated.append(opportunity)
+                continue
+            industries = list(mapping.get("industry_sectors") or [])
+            concepts = list(mapping.get("concept_sectors") or [])
+            evidence = dict(opportunity.evidence)
+            if industries:
+                evidence["sector"] = industries[0]
+                evidence["industry_sectors"] = industries
+            if concepts:
+                evidence["concepts"] = concepts[:12]
+                evidence["concept_sectors"] = concepts
+            evidence["stock_sector_mapping"] = {
+                "source": "mongodb.stock_sector_mapping",
+                "stock_code": mapping.get("stock_code") or code,
+                "stock_name": mapping.get("stock_name") or opportunity.name,
+                "industry_sectors": industries,
+                "concept_sectors": concepts,
+                "updated_at": mapping.get("updated_at") or "",
+            }
+            updated.append(
+                Opportunity(
+                    symbol=opportunity.symbol,
+                    name=opportunity.name,
+                    grade=opportunity.grade,
+                    score=opportunity.score,
+                    trigger=opportunity.trigger,
+                    invalidation=opportunity.invalidation,
+                    action=opportunity.action,
+                    risk_flags=opportunity.risk_flags,
+                    evidence=evidence,
+                )
+            )
+        return updated
+
+    def _selected_sector_mapping_summary(
+        self,
+        opportunities: list[Opportunity],
+        source_result: SourceResult | None,
+    ) -> dict:
+        industry_groups: dict[str, dict] = {}
+        concept_groups: dict[str, dict] = {}
+        mapped_symbols = []
+        missing_symbols = []
+        updated_at_values = []
+        for opportunity in opportunities:
+            mapping = opportunity.evidence.get("stock_sector_mapping") or {}
+            if not mapping:
+                missing_symbols.append({"symbol": opportunity.symbol, "name": opportunity.name})
+                continue
+            mapped_symbols.append(opportunity.symbol)
+            if mapping.get("updated_at"):
+                updated_at_values.append(str(mapping.get("updated_at")))
+            industries = list(mapping.get("industry_sectors") or [])
+            concepts = list(mapping.get("concept_sectors") or [])
+            if not industries:
+                industries = [str(opportunity.evidence.get("sector") or "未分类")]
+            for industry in industries:
+                group = industry_groups.setdefault(industry, {"theme": industry, "count": 0, "symbols": []})
+                group["count"] += 1
+                group["symbols"].append({"symbol": opportunity.symbol, "name": opportunity.name, "grade": opportunity.grade.value, "score": opportunity.score})
+            for concept in concepts:
+                group = concept_groups.setdefault(concept, {"theme": concept, "count": 0, "symbols": []})
+                group["count"] += 1
+                group["symbols"].append({"symbol": opportunity.symbol, "name": opportunity.name, "grade": opportunity.grade.value, "score": opportunity.score})
+
+        industries = sorted(industry_groups.values(), key=lambda item: (-item["count"], item["theme"]))[:12]
+        concepts = sorted(concept_groups.values(), key=lambda item: (-item["count"], item["theme"]))[:15]
+        status = source_result.status.value if source_result else "missing"
+        if mapped_symbols:
+            top_industries = "、".join(item["theme"] for item in industries[:3])
+            top_concepts = "、".join(item["theme"] for item in concepts[:5])
+            summary = f"入选标的已映射{len(mapped_symbols)}/{len(opportunities)}只；行业集中在{top_industries or '未分类'}，概念高频为{top_concepts or '暂无'}。"
+        else:
+            summary = "入选标的未取得数据库行业/概念映射，报告保留选股池原始行业字段。"
+        return {
+            "status": status,
+            "source": source_result.source if source_result else "mongodb.stock_sector_mapping",
+            "summary": summary,
+            "mapped_count": len(mapped_symbols),
+            "total_count": len(opportunities),
+            "missing_symbols": missing_symbols,
+            "updated_at": max(updated_at_values) if updated_at_values else "",
+            "industries": industries,
+            "concepts": concepts,
+        }
 
     def _grade_for_score(self, score: float) -> OpportunityGrade:
         if score >= 0.72:
@@ -777,6 +883,7 @@ class DailyReportBuilder:
         xueqiu_result: SourceResult | None = None,
         opportunity_news_llm_result: SourceResult | None = None,
         xueqiu_llm_result: SourceResult | None = None,
+        stock_sector_mapping_result: SourceResult | None = None,
     ) -> list[dict[str, str]]:
         security_news_status = self._merge_source_status(
             item.evidence.get("news_source_status", {}) for item in opportunities
@@ -816,6 +923,14 @@ class DailyReportBuilder:
             rows.append({"data": xueqiu_result.data, "source": xueqiu_result.source, "status": xueqiu_result.status.value})
         if xueqiu_llm_result:
             rows.append({"data": xueqiu_llm_result.data, "source": xueqiu_llm_result.source, "status": xueqiu_llm_result.status.value})
+        if stock_sector_mapping_result:
+            rows.append(
+                {
+                    "data": stock_sector_mapping_result.data,
+                    "source": stock_sector_mapping_result.source,
+                    "status": stock_sector_mapping_result.status.value,
+                }
+            )
         if opportunity_news_llm_result and not llm_news_status:
             rows.append(
                 {
@@ -871,6 +986,7 @@ class DailyReportBuilder:
         xueqiu_result: SourceResult | None = None,
         opportunity_news_llm_result: SourceResult | None = None,
         xueqiu_llm_result: SourceResult | None = None,
+        stock_sector_mapping_result: SourceResult | None = None,
     ) -> list[dict]:
         security_results: list[dict] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -903,6 +1019,8 @@ class DailyReportBuilder:
             results.extend(source_results_to_dicts([xueqiu_result]))
         if xueqiu_llm_result:
             results.extend(source_results_to_dicts([xueqiu_llm_result]))
+        if stock_sector_mapping_result:
+            results.extend(source_results_to_dicts([stock_sector_mapping_result]))
         has_symbol_news_llm = any(result.get("data") == "个股新闻解读" for result in security_results)
         if opportunity_news_llm_result and not has_symbol_news_llm:
             results.extend(source_results_to_dicts([opportunity_news_llm_result]))
@@ -917,6 +1035,7 @@ class DailyReportBuilder:
         xueqiu_result: SourceResult | None = None,
         opportunity_news_llm_result: SourceResult | None = None,
         xueqiu_llm_result: SourceResult | None = None,
+        stock_sector_mapping_result: SourceResult | None = None,
     ) -> list[dict]:
         results = self._source_results(
             opportunities,
@@ -926,6 +1045,7 @@ class DailyReportBuilder:
             xueqiu_result,
             opportunity_news_llm_result,
             xueqiu_llm_result,
+            stock_sector_mapping_result,
         )
         grouped: dict[tuple[str, str], dict] = {}
         for result in results:

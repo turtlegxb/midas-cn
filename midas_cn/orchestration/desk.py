@@ -24,6 +24,7 @@ from midas_cn.social import XueqiuArchive, XueqiuTracker
 from midas_cn.storage.archive import DecisionArchive
 from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts
 from midas_cn.storage.report_archive import DailyReportArchive
+from midas_cn.storage.stock_sector_mapping import fetch_stock_sector_mappings
 from midas_cn.universe.symbols import normalize_symbols
 
 
@@ -116,7 +117,7 @@ class TradingDesk:
         now: datetime | None = None,
         progress: ProgressCallback | None = None,
     ) -> tuple[DailyReport, dict[str, str]]:
-        total_steps = 13
+        total_steps = 14
 
         def emit(step: int, message: str) -> None:
             if progress:
@@ -165,11 +166,13 @@ class TradingDesk:
             stock_pools,
             pool_technical_profiles,
         )
-        emit(11, "补充个股最新新闻")
+        emit(11, "读取入选个股行业与概念映射")
+        stock_sector_mappings, stock_sector_mapping_result = self._load_stock_sector_mappings(report_opportunities)
+        emit(12, "补充个股最新新闻")
         opportunity_news_results = self._fetch_opportunity_news(report_opportunities)
-        emit(12, "计算指数技术状态")
+        emit(13, "计算指数技术状态")
         index_profiles = self._build_index_profiles()
-        emit(13, "组装并保存中文报告")
+        emit(14, "组装并保存中文报告")
         report = self.report_builder.build(
             run_id=as_of.strftime("%Y%m%d_%H%M%S"),
             as_of=as_of,
@@ -186,6 +189,8 @@ class TradingDesk:
             opportunity_news_results=opportunity_news_results,
             technical_profiles=pool_technical_profiles,
             index_profiles=index_profiles,
+            stock_sector_mappings=stock_sector_mappings,
+            stock_sector_mapping_result=stock_sector_mapping_result,
         )
         paths: dict[str, str] = {}
         if persist:
@@ -296,6 +301,10 @@ class TradingDesk:
             except Exception as exc:
                 results[opportunity.symbol] = []
         return results
+
+    def _load_stock_sector_mappings(self, opportunities):
+        symbols = [opportunity.symbol for opportunity in opportunities[:10]]
+        return fetch_stock_sector_mappings(symbols, self.config.section("mongodb"))
 
     def _load_or_fetch_xueqiu(self, trade_date: str, persist: bool):
         xueqiu_config = self.config.section("xueqiu")

@@ -126,6 +126,35 @@ class MarkdownReportRenderer:
                     f"{item.get('broken_limit_up')} | {symbols} | {item.get('judgement')} |"
                 )
 
+        selected_mapping = report.metadata.get("selected_sector_mapping", {})
+        lines.extend([
+            "",
+            "## 入选个股行业与概念映射",
+            "",
+            f"- 状态：{status_label(selected_mapping.get('status', 'missing'))}",
+            f"- 汇总：{clean_markdown_field(selected_mapping.get('summary'))}",
+        ])
+        if selected_mapping.get("updated_at"):
+            lines.append(f"- 映射更新时间：{selected_mapping.get('updated_at')}")
+        if selected_mapping.get("industries"):
+            lines.extend([
+                "",
+                "| 行业 | 入选数 | 标的 |",
+                "| --- | ---: | --- |",
+            ])
+            for item in selected_mapping.get("industries", [])[:12]:
+                lines.append(f"| {item.get('theme')} | {item.get('count')} | {mapped_symbol_list(item.get('symbols', []))} |")
+        if selected_mapping.get("concepts"):
+            lines.extend([
+                "",
+                "| 概念 | 入选数 | 标的 |",
+                "| --- | ---: | --- |",
+            ])
+            for item in selected_mapping.get("concepts", [])[:15]:
+                lines.append(f"| {item.get('theme')} | {item.get('count')} | {mapped_symbol_list(item.get('symbols', []))} |")
+        if selected_mapping.get("missing_symbols"):
+            lines.append(f"- 未映射：{mapped_symbol_list(selected_mapping.get('missing_symbols', []))}")
+
         xueqiu = report.metadata.get("xueqiu_tracking", {})
         lines.extend([
             "",
@@ -343,6 +372,7 @@ def source_label(value: object) -> str:
         "akshare_stock_zh_a_daily": "新浪日K行情",
         "akshare_stock_zh_a_hist_tx": "腾讯日K行情",
         "llm_report_synthesis": "大模型复盘服务",
+        "mongodb.stock_sector_mapping": "MongoDB行业概念映射",
         "xueqiu": "雪球公开数据",
         "未获取": "未获取",
     }
@@ -429,6 +459,15 @@ def format_weight(value: object) -> str:
 
 def symbol_list(items: list[dict]) -> str:
     return "；".join(f"{item.get('symbol')} {item.get('name')}" for item in items[:4]) or "无"
+
+
+def mapped_symbol_list(items: list[dict]) -> str:
+    return "；".join(
+        f"{item.get('symbol')} {item.get('name')}({item.get('grade')}/{float(item.get('score') or 0):.3f})"
+        if item.get("grade") is not None
+        else f"{item.get('symbol')} {item.get('name')}"
+        for item in items[:6]
+    ) or "无"
 
 
 def theme_row(item: dict) -> str:

@@ -235,11 +235,65 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(updated.evidence["score_breakdown"]["news_score"], 0)
         self.assertIn("RSI过热，不给A类", updated.evidence["downgrade_reasons"])
 
+    def test_selected_opportunities_are_grouped_by_database_sector_mapping(self):
+        builder = DailyReportBuilder()
+        opportunities = [
+            Opportunity(
+                symbol="300001.SZ",
+                name="样本科技",
+                grade=OpportunityGrade.A,
+                score=0.82,
+                trigger="放量突破。",
+                invalidation="跌破支撑。",
+                action="跟踪。",
+                evidence={"sector": "旧行业", "concepts": ["旧概念"]},
+            ),
+            Opportunity(
+                symbol="300002.SZ",
+                name="样本制造",
+                grade=OpportunityGrade.B,
+                score=0.51,
+                trigger="资金流入。",
+                invalidation="跌破均线。",
+                action="观察。",
+                evidence={},
+            ),
+        ]
+
+        enriched = builder._attach_stock_sector_mappings(
+            opportunities,
+            {
+                "300001": {
+                    "stock_code": "300001",
+                    "stock_name": "样本科技",
+                    "industry_sectors": ["软件开发"],
+                    "concept_sectors": ["人工智能", "信创"],
+                    "updated_at": "2026-05-14 21:39:54",
+                },
+                "300002": {
+                    "stock_code": "300002",
+                    "stock_name": "样本制造",
+                    "industry_sectors": ["软件开发"],
+                    "concept_sectors": ["人工智能"],
+                    "updated_at": "2026-05-14 21:39:54",
+                },
+            },
+        )
+        summary = builder._selected_sector_mapping_summary(enriched, None)
+
+        self.assertEqual(enriched[0].evidence["sector"], "软件开发")
+        self.assertEqual(enriched[0].evidence["concepts"], ["人工智能", "信创"])
+        self.assertEqual(summary["industries"][0]["theme"], "软件开发")
+        self.assertEqual(summary["industries"][0]["count"], 2)
+        self.assertEqual(summary["concepts"][0]["theme"], "人工智能")
+        self.assertEqual(summary["concepts"][0]["count"], 2)
+
     def test_daily_report_builds_phase_one_sections(self):
         config = load_config("config/system.toml")
         config.raw.setdefault("data", {})["provider"] = "mock"
         config.raw.setdefault("llm", {})["enabled"] = False
         config.raw.setdefault("xueqiu", {})["enabled"] = False
+        config.raw.setdefault("mongodb", {})["enabled"] = False
         desk = build_trading_desk(config)
         with TemporaryDirectory() as temp_dir:
             desk.pool_archive = StockPoolArchive(Path(temp_dir))
@@ -298,6 +352,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("market_regime_score", report.metadata)
         self.assertIn("stock_pool_analysis", report.metadata)
         self.assertIn("theme_rotation", report.metadata)
+        self.assertIn("selected_sector_mapping", report.metadata)
         self.assertIn("xueqiu_tracking", report.metadata)
         self.assertIn("macro_policy_analysis", report.metadata)
         self.assertIn("llm_synthesis", report.metadata)
@@ -327,6 +382,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertTrue(any(item["data"] == "选股池" for item in report.source_audit))
         rendered = MarkdownReportRenderer().render(report)
         self.assertIn("板块轮动与主题深挖", rendered)
+        self.assertIn("入选个股行业与概念映射", rendered)
         self.assertIn("雪球大V与持仓跟踪", rendered)
         self.assertIn("宏观及经济政策分析", rendered)
         self.assertIn("综合评分：", rendered)
@@ -352,6 +408,7 @@ class DailyReportTest(unittest.TestCase):
         config.raw.setdefault("llm", {})["enabled"] = False
         config.raw.setdefault("xueqiu", {})["enabled"] = False
         config.raw.setdefault("pools", {})["enabled"] = False
+        config.raw.setdefault("mongodb", {})["enabled"] = False
         desk = build_trading_desk(config)
         report, _ = desk.run_daily_report(
             ["600519", "300750"],
@@ -380,6 +437,7 @@ class DailyReportTest(unittest.TestCase):
         config.raw.setdefault("data", {})["provider"] = "mock"
         config.raw.setdefault("llm", {})["enabled"] = False
         config.raw.setdefault("xueqiu", {})["enabled"] = False
+        config.raw.setdefault("mongodb", {})["enabled"] = False
         desk = build_trading_desk(config)
         entries = [
             StockPoolEntry(f"300{i:03d}.SZ", f"样本{i}", "当日涨停", i, {"成交额": 300000000, "所属行业": "软件"})

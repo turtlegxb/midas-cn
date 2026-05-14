@@ -31,6 +31,7 @@ class DecisionReviewTest(unittest.TestCase):
         config.raw.setdefault("pools", {})["enabled"] = False
         config.raw.setdefault("llm", {})["enabled"] = False
         config.raw.setdefault("xueqiu", {})["enabled"] = False
+        config.raw.setdefault("mongodb", {})["enabled"] = False
         desk = build_trading_desk(config)
         decision_run, _ = desk.run(["600519", "300750"], persist=False, now=datetime(2026, 5, 6, 15, 55))
 

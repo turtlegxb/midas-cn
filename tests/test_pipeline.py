@@ -17,6 +17,7 @@ class PipelineTest(unittest.TestCase):
         config.raw.setdefault("pools", {})["enabled"] = False
         config.raw.setdefault("llm", {})["enabled"] = False
         config.raw.setdefault("xueqiu", {})["enabled"] = False
+        config.raw.setdefault("mongodb", {})["enabled"] = False
         desk = build_trading_desk(config)
         decision_run, archive_path = desk.run(["600519", "300750"], persist=False)
 
@@ -35,6 +36,7 @@ class PipelineTest(unittest.TestCase):
         config.raw.setdefault("pools", {})["enabled"] = False
         config.raw.setdefault("llm", {})["enabled"] = False
         config.raw.setdefault("xueqiu", {})["enabled"] = False
+        config.raw.setdefault("mongodb", {})["enabled"] = False
         desk = build_trading_desk(config)
         events = []
 
@@ -48,11 +50,11 @@ class PipelineTest(unittest.TestCase):
         for event in events:
             first_by_step.setdefault(event[0], event)
 
-        self.assertEqual(events[0], (1, 13, "初始化股票池与交易日历"))
-        self.assertEqual(events[-1], (13, 13, "组装并保存中文报告"))
-        self.assertEqual(sorted(first_by_step), list(range(1, 14)))
+        self.assertEqual(events[0], (1, 14, "初始化股票池与交易日历"))
+        self.assertEqual(events[-1], (14, 14, "组装并保存中文报告"))
+        self.assertEqual(sorted(first_by_step), list(range(1, 15)))
         self.assertTrue(first_by_step[4][2].startswith("拉取核心标的上下文：600519.SH"))
-        self.assertTrue(all(total == 13 for _, total, _ in events))
+        self.assertTrue(all(total == 14 for _, total, _ in events))
 
 
 if __name__ == "__main__":
