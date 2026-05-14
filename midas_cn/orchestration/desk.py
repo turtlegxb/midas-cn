@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -11,7 +12,7 @@ from midas_cn.data.news import row_value
 from midas_cn.data.providers import MarketDataProvider, build_provider
 from midas_cn.decision.engine import DecisionEngine
 from midas_cn.llm import build_report_synthesis_service
-from midas_cn.models import DailyReport, DecisionRun, KLineBar, SourceStatus, StockPool, StockPoolEntry
+from midas_cn.models import DailyReport, DecisionRun, KLineBar, SecurityContext, SourceStatus, StockPool, StockPoolEntry
 from midas_cn.playbooks.positioning import PositionPlaybook
 from midas_cn.pools.builder import AkShareStockPoolBuilder, latest_report_trade_date
 from midas_cn.pools.storage import StockPoolArchive
@@ -134,10 +135,12 @@ class TradingDesk:
             lookback_days=int(self.config.section("news").get("lookback_days", 2)),
             limit=50,
         )
+        universe_sector_mappings, _ = self._load_stock_sector_mappings_for_symbols(universe)
         securities = []
         for index, symbol in enumerate(universe, start=1):
             emit(4, f"拉取核心标的上下文：{symbol} ({index}/{len(universe)})")
-            securities.append(self.provider.get_security_context(symbol))
+            security = self.provider.get_security_context(symbol)
+            securities.append(self._apply_stock_sector_mapping_to_security(security, universe_sector_mappings))
         emit(5, "执行数据质量检查")
         quality_gate = self.quality_gate.evaluate(market, securities)
         opportunities = []
@@ -306,7 +309,45 @@ class TradingDesk:
 
     def _load_stock_sector_mappings(self, opportunities):
         symbols = [opportunity.symbol for opportunity in opportunities[:10]]
+        return self._load_stock_sector_mappings_for_symbols(symbols)
+
+    def _load_stock_sector_mappings_for_symbols(self, symbols: list[str]):
         return fetch_stock_sector_mappings(symbols, self.config.section("mongodb"))
+
+    def _apply_stock_sector_mapping_to_security(
+        self,
+        security: SecurityContext,
+        mappings: dict[str, dict],
+    ) -> SecurityContext:
+        if not mappings:
+            return security
+        code = security.symbol.split(".", 1)[0].zfill(6)
+        mapping = mappings.get(code) or mappings.get(security.symbol)
+        if not mapping:
+            return security
+        industries = list(mapping.get("industry_sectors") or [])
+        concepts = list(mapping.get("concept_sectors") or [])
+        sector = industries[0] if industries else security.sector
+        metadata = dict(security.metadata)
+        metadata["stock_sector_mapping"] = {
+            "source": "mongodb.stock_sector_mapping",
+            "stock_code": mapping.get("stock_code") or code,
+            "stock_name": mapping.get("stock_name") or security.name,
+            "industry_sectors": industries,
+            "concept_sectors": concepts,
+            "updated_at": mapping.get("updated_at") or "",
+        }
+        if industries:
+            metadata["industry_sectors"] = industries
+        if concepts:
+            metadata["concepts"] = concepts[:12]
+            metadata["concept_sectors"] = concepts
+        return replace(
+            security,
+            name=str(mapping.get("stock_name") or security.name),
+            sector=sector,
+            metadata=metadata,
+        )
 
     def _load_or_fetch_xueqiu(self, trade_date: str, persist: bool):
         xueqiu_config = self.config.section("xueqiu")

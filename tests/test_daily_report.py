@@ -13,6 +13,7 @@ from midas_cn.models import (
     PositionPlan,
     QualityGate,
     QualityStatus,
+    SecurityContext,
     SourceResult,
     SourceStatus,
     StockPool,
@@ -287,6 +288,37 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(summary["industries"][0]["count"], 2)
         self.assertEqual(summary["concepts"][0]["theme"], "人工智能")
         self.assertEqual(summary["concepts"][0]["count"], 2)
+
+    def test_mongodb_sector_mapping_enriches_core_security_context(self):
+        config = load_config("config/system.toml")
+        config.raw.setdefault("mongodb", {})["enabled"] = False
+        desk = build_trading_desk(config)
+        security = SecurityContext(
+            symbol="300750.SZ",
+            name="300750.SZ",
+            sector="未分类",
+            price=100.0,
+            liquidity_score=0.5,
+            metadata={"provider": "akshare"},
+        )
+
+        enriched = desk._apply_stock_sector_mapping_to_security(
+            security,
+            {
+                "300750": {
+                    "stock_code": "300750",
+                    "stock_name": "宁德时代",
+                    "industry_sectors": ["电池"],
+                    "concept_sectors": ["动力电池", "储能"],
+                    "updated_at": "2026-05-14 21:39:54",
+                }
+            },
+        )
+
+        self.assertEqual(enriched.name, "宁德时代")
+        self.assertEqual(enriched.sector, "电池")
+        self.assertEqual(enriched.metadata["concepts"], ["动力电池", "储能"])
+        self.assertEqual(enriched.metadata["stock_sector_mapping"]["source"], "mongodb.stock_sector_mapping")
 
     def test_daily_report_builds_phase_one_sections(self):
         config = load_config("config/system.toml")
