@@ -63,6 +63,9 @@ build_if_missing = true
 technical_limit = 20
 industry_enrich_limit = 8
 industry_enrich_timeout_seconds = 8
+theme_pullback_enabled = true
+theme_pullback_theme_limit = 5
+theme_pullback_candidate_limit = 80
 
 [xueqiu]
 enabled = true

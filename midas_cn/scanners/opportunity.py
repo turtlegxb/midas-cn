@@ -92,7 +92,7 @@ class OpportunityScanner:
 
     def _trigger(self, grade: OpportunityGrade, security: SecurityContext) -> str:
         if grade == OpportunityGrade.A:
-            return "趋势、基本面、资金和质量门禁同时确认，可按交易计划执行。"
+            return "趋势、基本面、资金和质量门禁同时确认，但只在回踩计划位企稳后执行。"
         if grade == OpportunityGrade.B:
             return "回踩不破关键承接位且再次放量时升级观察。"
         if grade == OpportunityGrade.C:
@@ -110,7 +110,7 @@ class OpportunityScanner:
 
     def _action(self, grade: OpportunityGrade, quality_gate: QualityGate) -> str:
         if grade == OpportunityGrade.A:
-            return "允许纳入交易计划，按风控仓位执行。"
+            return "纳入交易计划，但不追高；等待回踩承接或突破后回踩确认，再按风控仓位执行。"
         if grade == OpportunityGrade.B:
             suffix = "；WARN质量下不直接追买。" if quality_gate.status != QualityStatus.PASS else "。"
             return "等待回踩承接，单票卫星仓上限控制" + suffix

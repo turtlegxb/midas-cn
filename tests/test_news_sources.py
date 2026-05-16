@@ -133,7 +133,7 @@ class NewsSourceTest(unittest.TestCase):
 
         provider.akshare = FakeAkshare()
 
-        results = provider.get_security_news_results("600519.SH", lookback_days=2, limit=10)
+        results = provider.get_security_news_results("600519.SH", lookback_days=0, limit=10)
         statuses = {result.source: result.status for result in results}
 
         self.assertEqual(statuses["eastmoney_stock_news"], SourceStatus.FAILED)
@@ -157,7 +157,7 @@ class NewsSourceTest(unittest.TestCase):
 
         provider.akshare = FakeAkshare()
 
-        results = provider.get_security_news_results("600519.SH", lookback_days=2, limit=10)
+        results = provider.get_security_news_results("600519.SH", lookback_days=0, limit=10)
 
         self.assertEqual([result.source for result in results], ["cninfo_disclosure", "eastmoney_stock_notice", "eastmoney_stock_news"])
         self.assertEqual(results[0].items[0].title, "巨潮公告")
@@ -175,7 +175,7 @@ class NewsSourceTest(unittest.TestCase):
 
         provider.akshare = FakeAkshare()
 
-        results = provider.get_market_news_results(lookback_days=2, limit=10)
+        results = provider.get_market_news_results(lookback_days=0, limit=10)
 
         self.assertEqual([result.source for result in results], ["cctv", "eastmoney_global"])
         self.assertEqual(results[0].items[0].title, "央视政策")

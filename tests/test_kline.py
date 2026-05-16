@@ -23,6 +23,10 @@ class KLineTest(unittest.TestCase):
 
         self.assertIn("ema21", profile)
         self.assertIn("ema55", profile)
+        self.assertIn("ma5", profile)
+        self.assertIn("ma10", profile)
+        self.assertIsNotNone(profile["ma5"])
+        self.assertIsNotNone(profile["ma10"])
         self.assertIsNotNone(profile["ema21"])
         self.assertIsNotNone(profile["ema55"])
         self.assertGreater(profile["volume_ratio"], 0)
@@ -31,6 +35,8 @@ class KLineTest(unittest.TestCase):
         security = MockMarketDataProvider().get_security_context("600519.SH")
 
         self.assertEqual(security.metadata["provider"], "mock")
+        self.assertIsNotNone(security.metadata["technical"]["ma5"])
+        self.assertIsNotNone(security.metadata["technical"]["ma10"])
         self.assertIsNotNone(security.metadata["technical"]["ema21"])
         self.assertIsNotNone(security.metadata["technical"]["ema55"])
 

@@ -14,6 +14,8 @@ class TechnicalProfile:
     volume_ratio: float
     support: float
     resistance: float
+    ma5: float | None
+    ma10: float | None
     ema8: float | None
     ema21: float | None
     ema55: float | None
@@ -27,6 +29,8 @@ class TechnicalProfile:
             "volume_ratio": self.volume_ratio,
             "support": self.support,
             "resistance": self.resistance,
+            "ma5": self.ma5,
+            "ma10": self.ma10,
             "ema8": self.ema8,
             "ema21": self.ema21,
             "ema55": self.ema55,
@@ -48,6 +52,8 @@ def build_technical_profile(bars: Iterable[KLineBar]) -> TechnicalProfile:
     lows = [bar.low for bar in ordered]
     volumes = [bar.volume for bar in ordered]
     close = closes[-1]
+    ma5 = simple_moving_average(closes, 5)
+    ma10 = simple_moving_average(closes, 10)
     ema8 = ema(closes, 8)
     ema21 = ema(closes, 21)
     ema55 = ema(closes, 55)
@@ -66,6 +72,8 @@ def build_technical_profile(bars: Iterable[KLineBar]) -> TechnicalProfile:
         volume_ratio=round(volume_ratio, 3),
         support=round(support, 3),
         resistance=round(resistance, 3),
+        ma5=round(ma5, 3) if ma5 is not None else None,
+        ma10=round(ma10, 3) if ma10 is not None else None,
         ema8=round(ema8, 3) if ema8 is not None else None,
         ema21=round(ema21, 3) if ema21 is not None else None,
         ema55=round(ema55, 3) if ema55 is not None else None,
@@ -81,6 +89,12 @@ def ema(values: list[float], period: int) -> float | None:
     for value in values[period:]:
         current = value * multiplier + current * (1 - multiplier)
     return current
+
+
+def simple_moving_average(values: list[float], period: int) -> float | None:
+    if len(values) < period:
+        return None
+    return average(values[-period:])
 
 
 def rsi(values: list[float], period: int = 14) -> float:
@@ -123,4 +137,3 @@ def _ma_alignment(close: float, ema8: float | None, ema21: float | None, ema55: 
         if close < ema8 < ema21:
             return -0.35
     return 0.0
-

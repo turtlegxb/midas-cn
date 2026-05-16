@@ -280,8 +280,14 @@ class DailyReportBuilder:
             news_score = self._opportunity_news_score(news_items)
             pool_score = float(score_breakdown.get("pool_score") or opportunity.evidence.get("pool_score") or 0)
             technical_score = float(score_breakdown.get("technical_score") or opportunity.evidence.get("technical_score") or 0)
-            final_score = round(max(-1.0, min(1.0, pool_score + technical_score + news_score)), 3)
+            entry_timing_score = float(
+                score_breakdown.get("entry_timing_score")
+                or opportunity.evidence.get("entry_timing_score")
+                or 0
+            )
+            final_score = round(max(-1.0, min(1.0, pool_score + technical_score + entry_timing_score + news_score)), 3)
             grade = self._grade_for_score(final_score)
+            grade = self._apply_entry_timing_cap(grade, opportunity.evidence.get("entry_timing") or {})
             grade, downgrade_reasons = self._apply_opportunity_downgrades(
                 grade,
                 {**opportunity.evidence, "risk_flags": opportunity.risk_flags},
@@ -643,7 +649,7 @@ class DailyReportBuilder:
         grade_counts = Counter(item.grade.value for item in opportunities)
         mode = self._market_mode(market)
         if grade_counts.get("A", 0):
-            next_step = "优先执行A类计划，B类等待回踩确认。"
+            next_step = "A类也只在计划买点执行，B类等待回踩确认；高开直拉一律放弃追买。"
         elif grade_counts.get("B", 0):
             next_step = "不追高，等待B类标的回踩承接和量能二次确认。"
         elif grade_counts.get("C", 0):
@@ -936,7 +942,7 @@ class DailyReportBuilder:
 
     def _scenarios(self) -> list[dict[str, str]]:
         return [
-            {"scenario": "主线验证", "trigger": "主线低开或平开后不破关键位并重新放量", "action": "B类可小仓试探，严格单票上限。"},
+            {"scenario": "主线验证", "trigger": "主线低开或平开后不破关键位并重新放量", "action": "A/B类只在报告买入区间内小仓试探，超过追高上限则放弃。"},
             {"scenario": "主线钝化", "trigger": "高位震荡且无持续涨停梯队", "action": "不新增，维持现金和核心仓。"},
             {"scenario": "主线证伪", "trigger": "核心指数或主题龙头放量长阴", "action": "清理卫星仓，提高现金。"},
         ]
@@ -1720,6 +1726,7 @@ class DailyReportBuilder:
             "limit_up": 0.34,
             "broken_limit_up": 0.12,
             "limit_down": -0.42,
+            "theme_pullback": 0.34,
         }
         base = base_weights.get(pool.name, 0.08)
         rank_bonus = max(0.0, (21 - min(entry.rank, 20)) / 20) * abs(base) * 0.45
@@ -1742,7 +1749,9 @@ class DailyReportBuilder:
     def _pool_candidate_to_opportunity(self, item: dict, quality_gate: QualityGate, technical_result: dict) -> Opportunity:
         technical = dict(technical_result.get("technical") or {})
         technical_score = self._technical_score(technical)
-        score = round(max(-1.0, min(1.0, item["score"] + technical_score)), 3)
+        timing = self._entry_timing(technical, item["pools"])
+        timing_score = float(timing.get("score_adjustment") or 0)
+        score = round(max(-1.0, min(1.0, item["score"] + technical_score + timing_score)), 3)
         if score >= 0.72:
             grade = OpportunityGrade.A
         elif score >= 0.36:
@@ -1751,18 +1760,24 @@ class DailyReportBuilder:
             grade = OpportunityGrade.C
         else:
             grade = OpportunityGrade.D
+        grade = self._apply_entry_timing_cap(grade, timing)
         if quality_gate.status.value != "PASS" and grade == OpportunityGrade.A:
             grade = OpportunityGrade.B
         pool_names = [self._pool_display_name(name) for name in item["pools"]]
         technical_text = self._technical_trigger_text(technical, technical_result)
-        trigger = "命中选股池：" + "、".join(pool_names) + f"；{technical_text}；次日需验证开盘承接、板块延续和成交额。"
+        entry_plan = self._entry_plan(grade, technical, item["pools"], timing)
+        trigger = (
+            "命中选股池："
+            + "、".join(pool_names)
+            + f"；{technical_text}；{entry_plan['trigger']}；次日需验证板块延续和成交额。"
+        )
         invalidation = self._technical_invalidation_text(technical)
         if "当日跌停" in item["risk"]:
             action = "风险观察，不做反包预设，只有快速修复并放量站回关键位才重新评估。"
         elif grade in {OpportunityGrade.A, OpportunityGrade.B}:
-            action = "进入优先跟踪，等待分时确认后再考虑小仓试探。"
+            action = entry_plan["action"]
         elif grade == OpportunityGrade.C:
-            action = "放入观察池，等待第二天强弱确认。"
+            action = "放入观察池，只记录回踩承接，不做追高试错。"
         else:
             action = "回避，暂不参与。"
         return Opportunity(
@@ -1775,16 +1790,18 @@ class DailyReportBuilder:
             action=action,
             risk_flags=list(dict.fromkeys(item["risk"])),
             evidence={
-                "source": "选股池",
+                "source": "热门主题回调池" if "theme_pullback" in item["pools"] else "选股池",
                 "pools": pool_names,
                 "sector": str(item["metrics"].get("所属行业") or "未分类"),
                 "concepts": list(item["metrics"].get("概念") or [])[:TOP_THEME_LIMIT] if isinstance(item["metrics"].get("概念"), list) else [],
                 "metrics": item["metrics"],
                 "pool_score": round(item["score"], 3),
                 "technical_score": round(technical_score, 3),
+                "entry_timing_score": round(timing_score, 3),
                 "score_breakdown": {
                     "pool_score": round(item["score"], 3),
                     "technical_score": round(technical_score, 3),
+                    "entry_timing_score": round(timing_score, 3),
                     "final_score": score,
                     "pool_contributions": [
                         {"pool": self._pool_display_name(pool_name), "score": round(contribution, 3)}
@@ -1794,6 +1811,8 @@ class DailyReportBuilder:
                 "technical": technical,
                 "technical_status": technical_result.get("status"),
                 "technical_error": technical_result.get("error_message"),
+                "entry_plan": entry_plan,
+                "entry_timing": timing,
             },
         )
 
@@ -1807,27 +1826,249 @@ class DailyReportBuilder:
         close = to_number(technical.get("close"))
         support = to_number(technical.get("support"))
         resistance = to_number(technical.get("resistance"))
+        ma5 = to_number(technical.get("ma5"))
+        ma10 = to_number(technical.get("ma10"))
+        ema21 = to_number(technical.get("ema21"))
         score = trend * 0.08 + ma_alignment * 0.07
         score += max(-0.08, min((volume_ratio - 1.0) * 0.04, 0.05))
         if rsi >= 82:
-            score -= 0.10
+            score -= 0.12
         elif rsi >= 72:
-            score -= 0.06
+            score -= 0.08
         elif 45 <= rsi <= 68:
             score += 0.02
         elif rsi <= 30:
             score -= 0.06
+        if close and ema21 and ema21 > 0:
+            distance_to_ema21 = close / ema21 - 1
+            if distance_to_ema21 >= 0.14:
+                score -= 0.10
+            elif distance_to_ema21 >= 0.09:
+                score -= 0.07
+            elif distance_to_ema21 >= 0.06:
+                score -= 0.04
+        if close and ma10 and ma10 > 0 and close / ma10 - 1 >= 0.08:
+            score -= 0.04
+        if close and ma5 and ma5 > 0 and close / ma5 - 1 >= 0.06:
+            score -= 0.04
         if close and resistance and resistance > 0:
             distance_to_resistance = resistance / close - 1
             if 0 <= distance_to_resistance <= 0.03:
                 score += 0.015
             elif distance_to_resistance < 0:
                 score -= 0.06
-        if close and support and support > 0:
+        has_entry_anchor = any(value and value > 0 for value in (ma5, ma10, ema21))
+        if not has_entry_anchor and close and support and support > 0:
             distance_to_support = close / support - 1
-            if 0 <= distance_to_support <= 0.03:
-                score -= 0.06
+            if distance_to_support >= 0.18:
+                score -= 0.10
+            elif distance_to_support >= 0.12:
+                score -= 0.07
+            elif 0 <= distance_to_support <= 0.03:
+                score -= 0.03
         return max(-0.18, min(0.12, score))
+
+    def _entry_timing(self, technical: dict, pool_names: list[str]) -> dict[str, object]:
+        if not technical:
+            return {
+                "state": "unknown",
+                "label": "买点未知",
+                "score_adjustment": -0.16,
+                "max_grade": OpportunityGrade.C.value,
+                "reason": "技术价格缺失，无法确认是否已经回调到位。",
+            }
+        close = to_number(technical.get("close"))
+        support = to_number(technical.get("support"))
+        ma5 = to_number(technical.get("ma5")) or to_number(technical.get("ema8"))
+        ma10 = to_number(technical.get("ma10"))
+        ema21 = to_number(technical.get("ema21"))
+        rsi = float(technical.get("rsi") or 50)
+        volume_ratio = float(technical.get("volume_ratio") or 1)
+        trend = float(technical.get("trend_strength") or 0)
+        has_limit_up = "limit_up" in pool_names
+        if not close:
+            return {
+                "state": "unknown",
+                "label": "买点未知",
+                "score_adjustment": -0.16,
+                "max_grade": OpportunityGrade.C.value,
+                "reason": "缺少收盘价，不能判断回调位置。",
+            }
+
+        distances = {
+            "ma5": close / ma5 - 1 if ma5 and ma5 > 0 else None,
+            "ma10": close / ma10 - 1 if ma10 and ma10 > 0 else None,
+            "ema21": close / ema21 - 1 if ema21 and ema21 > 0 else None,
+            "support": close / support - 1 if support and support > 0 else None,
+        }
+        entry_distances = [
+            value
+            for key, value in distances.items()
+            if key in {"ma5", "ma10", "ema21"} and value is not None and value >= -0.015
+        ]
+        nearest_distance = min(entry_distances, default=None)
+        nearest_anchor = self._nearest_entry_anchor(distances)
+        pullback_ready = (
+            nearest_distance is not None
+            and nearest_distance <= 0.035
+            and 38 <= rsi <= 68
+            and trend >= -0.08
+            and not has_limit_up
+        )
+        pullback_near = (
+            nearest_distance is not None
+            and nearest_distance <= 0.065
+            and 35 <= rsi <= 72
+            and trend >= -0.12
+        )
+        broken = (
+            (ema21 and close < ema21 * 0.965)
+            or (support and close < support * 0.99)
+            or (trend < -0.18 and rsi < 45)
+        )
+        overextended = self._is_overextended(technical) or has_limit_up
+        if broken:
+            return {
+                "state": "broken",
+                "label": "回调跌坏",
+                "score_adjustment": -0.22,
+                "max_grade": OpportunityGrade.C.value,
+                "reason": "已跌破EMA21或关键支撑，先等重新站回承接位。",
+                "anchor": nearest_anchor,
+                "nearest_distance": round(nearest_distance, 4) if nearest_distance is not None else None,
+                "distances": self._rounded_distances(distances),
+            }
+        if pullback_ready:
+            return {
+                "state": "ready",
+                "label": "回调到位",
+                "score_adjustment": 0.10 if volume_ratio >= 0.8 else 0.06,
+                "max_grade": OpportunityGrade.A.value,
+                "reason": "价格贴近MA5/MA10/EMA21，RSI未过热，趋势未跌坏。",
+                "anchor": nearest_anchor,
+                "nearest_distance": round(nearest_distance, 4),
+                "distances": self._rounded_distances(distances),
+            }
+        if pullback_near and not overextended:
+            return {
+                "state": "near",
+                "label": "接近回调位",
+                "score_adjustment": 0.03,
+                "max_grade": OpportunityGrade.B.value,
+                "reason": "价格接近MA5/MA10/EMA21承接区，但还需要进一步回踩或缩量企稳。",
+                "anchor": nearest_anchor,
+                "nearest_distance": round(nearest_distance, 4),
+                "distances": self._rounded_distances(distances),
+            }
+        return {
+            "state": "wait_pullback",
+            "label": "等待回调",
+            "score_adjustment": -0.20 if overextended else -0.08,
+            "max_grade": OpportunityGrade.C.value,
+            "reason": "价格尚未回到MA5/MA10/EMA21承接区，当前不是系统定义的好买点。",
+            "anchor": nearest_anchor,
+            "nearest_distance": round(nearest_distance, 4) if nearest_distance is not None else None,
+            "distances": self._rounded_distances(distances),
+        }
+
+    def _nearest_entry_anchor(self, distances: dict[str, float | None]) -> str | None:
+        candidates = {
+            key: value
+            for key, value in distances.items()
+            if key in {"ma5", "ma10", "ema21"} and value is not None and value >= -0.015
+        }
+        if not candidates:
+            return None
+        return min(candidates.items(), key=lambda item: item[1])[0]
+
+    def _rounded_distances(self, distances: dict[str, float | None]) -> dict[str, float | None]:
+        return {
+            key: round(value, 4) if value is not None else None
+            for key, value in distances.items()
+        }
+
+    def _apply_entry_timing_cap(self, grade: OpportunityGrade, timing: dict) -> OpportunityGrade:
+        max_grade = timing.get("max_grade")
+        if not max_grade:
+            return grade
+        return min_grade(grade, OpportunityGrade(str(max_grade)))
+
+    def _entry_plan(self, grade: OpportunityGrade, technical: dict, pool_names: list[str], timing: dict | None = None) -> dict[str, object]:
+        close = to_number(technical.get("close")) if technical else None
+        ma5 = (to_number(technical.get("ma5")) or to_number(technical.get("ema8"))) if technical else None
+        ma10 = to_number(technical.get("ma10")) if technical else None
+        ema21 = to_number(technical.get("ema21")) if technical else None
+        rsi = float(technical.get("rsi") or 50) if technical else 50.0
+        timing = timing or self._entry_timing(technical, pool_names)
+        has_limit_up = "limit_up" in pool_names
+        overextended = self._is_overextended(technical)
+        chase_risk = "高" if has_limit_up or overextended or rsi >= 75 else "中" if rsi >= 68 else "低"
+
+        if not close:
+            return {
+                "style": "wait_for_pullback",
+                "state": timing.get("state", "unknown"),
+                "label": timing.get("label", "买点未知"),
+                "chase_risk": chase_risk,
+                "buy_zone": "等待回踩MA5/MA10/EMA21后再评估",
+                "no_chase": "技术价格缺失，不设盘中追价单",
+                "trigger": "未确认回调到位，等待价格回到MA5/MA10/EMA21承接区后再评估",
+                "action": "不追高；进入观察名单，但价格数据不足，不给主动买入计划。",
+            }
+
+        anchors = [value for value in (ma5, ma10, ema21) if value and value > 0 and value < close]
+        if anchors:
+            upper_anchor = max(anchors)
+            lower_anchor = min(anchors)
+            buy_high = min(close * 0.985, upper_anchor * 1.015)
+            buy_low = max(lower_anchor * 0.995, buy_high * 0.965)
+            if buy_low > buy_high:
+                buy_low = buy_high * 0.965
+        else:
+            buy_high = close * 0.985
+            buy_low = close * 0.94
+
+        if grade == OpportunityGrade.A and chase_risk == "低":
+            position_text = "小仓试探"
+        else:
+            position_text = "轻仓观察"
+        no_chase_price = buy_high * 1.02
+        buy_zone = f"{buy_low:.2f}-{buy_high:.2f}"
+        return {
+            "style": "pullback_first",
+            "state": timing.get("state", "wait_pullback"),
+            "label": timing.get("label", "等待回调"),
+            "chase_risk": chase_risk,
+            "buy_zone_low": round(buy_low, 2),
+            "buy_zone_high": round(buy_high, 2),
+            "buy_zone": buy_zone,
+            "no_chase_above": round(no_chase_price, 2),
+            "no_chase": f"高开直拉或价格高于{no_chase_price:.2f}不追",
+            "trigger": f"{timing.get('label', '等待回调')}；只看MA5/MA10/EMA21附近{buy_zone}区间的缩量企稳/重新站回分时均价线",
+            "action": f"{timing.get('label', '等待回调')}；只在{buy_zone}区间出现承接后{position_text}，高于{no_chase_price:.2f}放弃。",
+        }
+
+    def _is_overextended(self, technical: dict) -> bool:
+        if not technical:
+            return False
+        close = to_number(technical.get("close"))
+        support = to_number(technical.get("support"))
+        ma5 = to_number(technical.get("ma5")) or to_number(technical.get("ema8"))
+        ma10 = to_number(technical.get("ma10"))
+        ema21 = to_number(technical.get("ema21"))
+        rsi = float(technical.get("rsi") or 50)
+        if rsi >= 75:
+            return True
+        if close and ema21 and ema21 > 0 and close / ema21 - 1 >= 0.09:
+            return True
+        if close and ma10 and ma10 > 0 and close / ma10 - 1 >= 0.08:
+            return True
+        if close and ma5 and ma5 > 0 and close / ma5 - 1 >= 0.06:
+            return True
+        has_entry_anchor = any(value and value > 0 for value in (ma5, ma10, ema21))
+        if not has_entry_anchor and close and support and support > 0 and close / support - 1 >= 0.12:
+            return True
+        return False
 
     def _technical_trigger_text(self, technical: dict, technical_result: dict) -> str:
         if not technical:
@@ -1881,4 +2122,5 @@ class DailyReportBuilder:
             "limit_up": "当日涨停",
             "limit_down": "当日跌停",
             "broken_limit_up": "当日炸板",
+            "theme_pullback": "热门主题回调候选",
         }.get(name, name)

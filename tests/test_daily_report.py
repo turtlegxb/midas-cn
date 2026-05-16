@@ -97,9 +97,9 @@ class DailyReportTest(unittest.TestCase):
                 as_of="20260508",
             ),
             StockPool(
-                name="limit_up",
-                description="当日涨停，不含ST",
-                entries=[StockPoolEntry("300001.SZ", "样本科技", "当日涨停", 1, {"成交额": 20_000_000_000})],
+                name="turnover_top20",
+                description="换手率top20，不含ST",
+                entries=[StockPoolEntry("300001.SZ", "样本科技", "换手率Top20", 1, {"成交额": 20_000_000_000})],
                 source="test",
                 status=SourceStatus.SUCCESS,
                 as_of="20260508",
@@ -110,12 +110,209 @@ class DailyReportTest(unittest.TestCase):
             [],
             QualityGate(status=QualityStatus.PASS),
             pools,
-            {"300001.SZ": {"status": "success", "technical": {"trend_strength": 1, "ma_alignment": 1, "rsi": 60, "volume_ratio": 2}}},
+            {
+                "300001.SZ": {
+                    "status": "success",
+                    "technical": {
+                        "trend_strength": 0.24,
+                        "ma_alignment": 0.65,
+                        "rsi": 58,
+                        "volume_ratio": 1.1,
+                        "close": 100,
+                        "ma5": 99.5,
+                        "ma10": 98.8,
+                        "ema8": 99,
+                        "ema21": 98,
+                        "support": 97,
+                        "resistance": 108,
+                    },
+                }
+            },
         )
 
         self.assertEqual(len(opportunities), 1)
         self.assertLess(opportunities[0].score, 0.95)
         self.assertLess(opportunities[0].evidence["pool_score"], 0.92)
+        self.assertIn("entry_plan", opportunities[0].evidence)
+        self.assertEqual(opportunities[0].evidence["entry_timing"]["state"], "ready")
+        self.assertEqual(opportunities[0].evidence["entry_timing"]["anchor"], "ma5")
+        self.assertIn("回调到位", opportunities[0].action)
+
+    def test_theme_pullback_pool_can_supply_report_opportunity(self):
+        builder = DailyReportBuilder()
+        pools = [
+            StockPool(
+                name="theme_pullback",
+                description="热门行业/概念回调候选",
+                entries=[
+                    StockPoolEntry(
+                        "300002.SZ",
+                        "回调科技",
+                        "热门行业/概念内回调候选",
+                        1,
+                        {"热主题": ["软件开发"], "所属行业": "软件开发", "概念": ["人工智能"]},
+                    )
+                ],
+                source="mongodb.stock_sector_mapping",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+
+        opportunities, _ = builder.rank_report_opportunities(
+            [],
+            QualityGate(status=QualityStatus.PASS),
+            pools,
+            {
+                "300002.SZ": {
+                    "status": "success",
+                    "technical": {
+                        "trend_strength": 0.22,
+                        "ma_alignment": 0.65,
+                        "rsi": 56,
+                        "volume_ratio": 0.95,
+                        "close": 100,
+                        "ma5": 99.4,
+                        "ma10": 98.7,
+                        "ema21": 97.5,
+                        "support": 94,
+                        "resistance": 110,
+                    },
+                }
+            },
+        )
+
+        self.assertEqual(len(opportunities), 1)
+        self.assertEqual(opportunities[0].symbol, "300002.SZ")
+        self.assertEqual(opportunities[0].evidence["source"], "热门主题回调池")
+        self.assertIn("热门主题回调候选", opportunities[0].evidence["pools"])
+        self.assertEqual(opportunities[0].evidence["entry_timing"]["state"], "ready")
+
+    def test_trading_desk_builds_theme_pullback_entries_from_hot_theme(self):
+        config = load_config("config/system.toml")
+        config.raw.setdefault("data", {})["provider"] = "mock"
+        config.raw.setdefault("mongodb", {})["enabled"] = False
+        desk = build_trading_desk(config)
+        stock_pools = [
+            StockPool(
+                name="limit_up",
+                description="当日涨停",
+                entries=[StockPoolEntry("300001.SZ", "前排科技", "当日涨停", 1, {"所属行业": "旧行业"})],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+        pool_mappings = {
+            "300001": {
+                "stock_code": "300001",
+                "stock_name": "前排科技",
+                "industry_sectors": ["软件开发"],
+                "concept_sectors": ["人工智能", "融资融券"],
+            }
+        }
+        hot_themes = desk._hot_themes_from_stock_pools(stock_pools, pool_mappings, limit=3)
+        entries = desk._theme_pullback_entries(
+            hot_themes,
+            {
+                "300002": {
+                    "stock_code": "300002",
+                    "stock_name": "回调科技",
+                    "industry_sectors": ["软件开发"],
+                    "concept_sectors": ["人工智能", "融资融券"],
+                }
+            },
+            stock_pools,
+            limit=10,
+        )
+
+        self.assertEqual(hot_themes[0]["theme"], "软件开发")
+        self.assertEqual(entries[0].symbol, "300002.SZ")
+        self.assertIn("软件开发", entries[0].metrics["热主题"])
+        self.assertNotIn("融资融券", entries[0].metrics["概念"])
+
+    def test_overextended_pool_candidate_gets_pullback_entry_plan(self):
+        builder = DailyReportBuilder()
+
+        opportunity = builder._pool_candidate_to_opportunity(
+            {
+                "symbol": "300001.SZ",
+                "name": "样本科技",
+                "score": 0.74,
+                "pool_contributions": [0.74],
+                "risk": [],
+                "pools": ["limit_up"],
+                "metrics": {},
+            },
+            QualityGate(status=QualityStatus.PASS),
+            {
+                "status": "success",
+                "technical": {
+                    "trend_strength": 1,
+                    "ma_alignment": 0.65,
+                    "rsi": 79,
+                    "volume_ratio": 2,
+                    "close": 110,
+                    "ma5": 103,
+                    "ma10": 100,
+                    "ema8": 101,
+                    "ema21": 95,
+                    "support": 90,
+                    "resistance": 110,
+                },
+            },
+        )
+
+        self.assertEqual(opportunity.grade, OpportunityGrade.C)
+        self.assertEqual(opportunity.evidence["entry_timing"]["state"], "wait_pullback")
+        self.assertIn("等待回调", opportunity.trigger)
+        self.assertEqual(opportunity.evidence["entry_plan"]["chase_risk"], "高")
+        self.assertLess(opportunity.evidence["entry_plan"]["buy_zone_high"], 110)
+
+    def test_opportunity_news_rescore_keeps_entry_timing_cap(self):
+        builder = DailyReportBuilder(opportunity_news_sort="hybrid")
+        opportunity = Opportunity(
+            symbol="300001.SZ",
+            name="样本科技",
+            grade=OpportunityGrade.B,
+            score=0.50,
+            trigger="等待回调。",
+            invalidation="跌破支撑。",
+            action="观察。",
+            evidence={
+                "pools": ["主力净额流入前二十"],
+                "pool_score": 0.70,
+                "technical_score": -0.10,
+                "entry_timing_score": -0.20,
+                "entry_timing": {"state": "wait_pullback", "max_grade": "C"},
+                "score_breakdown": {
+                    "pool_score": 0.70,
+                    "technical_score": -0.10,
+                    "entry_timing_score": -0.20,
+                    "final_score": 0.40,
+                },
+            },
+        )
+        news_result = SourceResult(
+            data="个股新闻/公告",
+            source="eastmoney_stock_notice",
+            provider="test",
+            status=SourceStatus.SUCCESS,
+            items=[
+                NewsItem(
+                    title="关于重大合同中标的公告",
+                    source="eastmoney_stock_notice",
+                    published_at="2026-05-09 18:00:00",
+                    category="announcement",
+                )
+            ],
+        )
+
+        updated = builder._attach_opportunity_news([opportunity], {"300001.SZ": [news_result]})[0]
+
+        self.assertEqual(updated.grade, OpportunityGrade.C)
+        self.assertLess(updated.score, 0.60)
+        self.assertEqual(updated.evidence["score_breakdown"]["entry_timing_score"], -0.20)
 
     def test_hybrid_news_sort_prioritizes_important_disclosures(self):
         builder = DailyReportBuilder(opportunity_news_sort="hybrid")
@@ -376,17 +573,46 @@ class DailyReportTest(unittest.TestCase):
                         error_message="primary failed",
                     ),
                     StockPool(
-                        name="limit_up",
-                        description="当日涨停，不含ST",
+                        name="main_net_inflow_top20",
+                        description="主力净额流入top20，不含ST",
                         entries=[
-                            StockPoolEntry("300001.SZ", "样本科技", "当日涨停", 1, {"成交额": 300000000, "所属行业": "软件"})
+                            StockPoolEntry("300001.SZ", "样本科技", "主力净流入", 1, {"今日主力净流入-净额": 300000000, "所属行业": "软件"})
                         ],
-                        source="akshare.stock_zt_pool_em",
+                        source="akshare.stock_main_fund_flow",
+                        status=SourceStatus.SUCCESS,
+                        as_of="20260506",
+                    ),
+                    StockPool(
+                        name="small_float_net_inflow_top20",
+                        description="小市值净流入top20，不含ST",
+                        entries=[
+                            StockPoolEntry("300001.SZ", "样本科技", "小市值净流入", 1, {"今日主力净流入-净额": 220000000, "所属行业": "软件"})
+                        ],
+                        source="akshare.stock_main_fund_flow",
                         status=SourceStatus.SUCCESS,
                         as_of="20260506",
                     ),
                 ],
             )
+            desk._build_pool_technical_profiles = lambda stock_pools, progress_emit=None: {
+                "300001.SZ": {
+                    "status": "success",
+                    "technical": {
+                        "trend_strength": 0.22,
+                        "ma_alignment": 0.65,
+                        "rsi": 57,
+                        "volume_ratio": 1.05,
+                        "close": 100,
+                        "ma5": 99.5,
+                        "ma10": 98.8,
+                        "ema8": 99,
+                        "ema21": 98,
+                        "support": 97,
+                        "resistance": 110,
+                    },
+                    "error_message": None,
+                }
+            }
             report, paths = desk.run_daily_report(
                 ["600519", "300750"],
                 persist=False,
@@ -431,7 +657,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn(report.metadata["market_regime_score"]["risk_label"], {"分化Risk On", "震荡偏多"})
         self.assertTrue(report.metadata["market_regime_score"]["mode"])
         self.assertEqual(len(report.metadata["market_regime_score"]["dimensions"]), 8)
-        self.assertEqual(report.metadata["stock_pool_analysis"]["source_health"]["success"], 1)
+        self.assertEqual(report.metadata["stock_pool_analysis"]["source_health"]["success"], 2)
         self.assertEqual(report.metadata["stock_pool_analysis"]["source_health"]["fallback"], 1)
         self.assertEqual(report.metadata["stock_pool_analysis"]["overlap"][0]["symbol"], "300001.SZ")
         self.assertEqual(report.metadata["theme_rotation"]["main_themes"][0]["theme"], "软件")
@@ -455,13 +681,15 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("软件", rendered)
         self.assertIn("- 板块：软件", rendered)
         self.assertIn("- 评分：总分", rendered)
+        self.assertIn("- 买点：", rendered)
+        self.assertIn("回调到位", rendered)
         self.assertIn("- 最新新闻：", rendered)
         self.assertNotIn("- 最新新闻：暂无", rendered)
         self.assertIn("  - [300001.SZ", rendered)
         self.assertIn("](https://example.com/300001.SZ/", rendered)
         self.assertIn("使用回退源", rendered)
         self.assertIn("数据源健康面板", rendered)
-        self.assertIn("东方财富涨停池", rendered)
+        self.assertIn("东方财富主力资金流", rendered)
         self.assertNotIn("akshare.", rendered)
         self.assertNotIn("sina.Market", rendered)
         self.assertNotIn("fallback", rendered)

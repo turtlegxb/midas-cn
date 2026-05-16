@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from typing import Any
 
@@ -78,6 +79,103 @@ def fetch_stock_sector_mappings(symbols: list[str], config: dict[str, Any]) -> t
             "missing_symbols": ",".join(missing[:20]),
         },
     )
+
+
+def fetch_stock_sector_mappings_by_themes(
+    themes: list[str],
+    config: dict[str, Any],
+    limit: int = 200,
+) -> tuple[dict[str, dict], SourceResult]:
+    enabled = bool(config.get("enabled", False))
+    if not enabled:
+        return {}, _result(SourceStatus.MISSING, error_message="MongoDB stock sector mapping disabled")
+
+    env_name = str(config.get("uri_env") or "MONGODB_URI")
+    uri = os.environ.get(env_name)
+    if not uri:
+        return {}, _result(SourceStatus.MISSING, error_type="missing_env", error_message=f"{env_name} is not set")
+
+    normalized_themes = _unique_text(themes)
+    if not normalized_themes:
+        return {}, _result(SourceStatus.MISSING, error_message="No hot themes")
+
+    try:
+        from pymongo import MongoClient
+    except Exception as exc:
+        return {}, _result(
+            SourceStatus.FAILED,
+            error_type=type(exc).__name__,
+            error_message="pymongo is not installed",
+            context={"requested_themes": str(len(normalized_themes))},
+        )
+
+    database = str(config.get("database") or "sunny_day")
+    collection = str(config.get("collection") or "stock_sector_mapping")
+    timeout_ms = int(config.get("timeout_ms", 8000))
+    query = _theme_query(normalized_themes)
+    client = MongoClient(uri, serverSelectionTimeoutMS=timeout_ms, connectTimeoutMS=timeout_ms, socketTimeoutMS=timeout_ms)
+    try:
+        client.admin.command("ping")
+        rows = list(
+            client[database][collection].find(
+                query,
+                {
+                    "_id": 0,
+                    "stock_code": 1,
+                    "stock_name": 1,
+                    "industry_sectors": 1,
+                    "concept_sectors": 1,
+                    "updated_at": 1,
+                },
+            ).limit(max(1, int(limit)))
+        )
+    except Exception as exc:
+        return {}, _result(
+            SourceStatus.FAILED,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            context={
+                "database": database,
+                "collection": collection,
+                "requested_themes": str(len(normalized_themes)),
+            },
+        )
+    finally:
+        client.close()
+
+    mappings = {_normalize_mapping_key(row.get("stock_code")): _normalize_mapping(row) for row in rows}
+    mappings = {key: value for key, value in mappings.items() if key}
+    return mappings, _result(
+        SourceStatus.SUCCESS if mappings else SourceStatus.MISSING,
+        context={
+            "database": database,
+            "collection": collection,
+            "requested_themes": str(len(normalized_themes)),
+            "themes": ",".join(normalized_themes[:20]),
+            "mapped_symbols": str(len(mappings)),
+        },
+    )
+
+
+def _theme_query(themes: list[str]) -> dict:
+    clauses = []
+    for theme in themes:
+        pattern = f"(^|;){re.escape(theme)}($|;)"
+        clauses.append({"industry_sectors": {"$regex": pattern}})
+        clauses.append({"concept_sectors": {"$regex": pattern}})
+    return {"$or": clauses} if clauses else {"stock_code": {"$in": []}}
+
+
+def _unique_text(values: list[str]) -> list[str]:
+    items = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        items.append(text)
+        seen.add(text)
+    return items
 
 
 def _stock_code(symbol: str) -> str:

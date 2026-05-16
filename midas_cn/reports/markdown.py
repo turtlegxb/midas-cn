@@ -496,6 +496,7 @@ def opportunity_card(item) -> list[str]:
         f"- 入选：{pools}",
         f"- 评分：{score_breakdown}",
         *([f"- 降级原因：{'；'.join(downgrade_reasons)}"] if downgrade_reasons else []),
+        f"- 买点：{entry_plan_text(item.evidence.get('entry_plan', {}))}",
         "- 最新新闻：",
         *latest_news_lines(item.evidence.get("news_items", []), limit=3),
         *opportunity_news_insight_lines(item.evidence),
@@ -505,6 +506,23 @@ def opportunity_card(item) -> list[str]:
         f"- 动作：{item.action}",
     ]
     return rows
+
+
+def entry_plan_text(plan: dict) -> str:
+    if not plan:
+        return "未确认回调到位，等待回踩承接后再评估。"
+    parts = []
+    if plan.get("label"):
+        parts.append(str(plan.get("label")))
+    if plan.get("buy_zone"):
+        parts.append(f"首选{plan.get('buy_zone')}区间")
+    if plan.get("trigger"):
+        parts.append(clean_markdown_field(plan.get("trigger")))
+    if plan.get("no_chase"):
+        parts.append(clean_markdown_field(plan.get("no_chase")))
+    if plan.get("chase_risk"):
+        parts.append(f"追高风险{plan.get('chase_risk')}")
+    return "；".join(parts) if parts else "未确认回调到位，等待回踩承接后再评估。"
 
 
 def opportunity_news_insight_lines(evidence: dict) -> list[str]:
@@ -525,6 +543,7 @@ def score_breakdown_text(breakdown: dict, fallback_score: float) -> str:
         return f"总分{fallback_score:.3f}"
     pool_score = float(breakdown.get("pool_score") or 0)
     technical_score = float(breakdown.get("technical_score") or 0)
+    entry_timing_score = float(breakdown.get("entry_timing_score") or 0)
     news_score = float(breakdown.get("news_score") or 0)
     final_score = float(breakdown.get("final_score") or fallback_score)
     contributions = breakdown.get("pool_contributions") or []
@@ -532,7 +551,8 @@ def score_breakdown_text(breakdown: dict, fallback_score: float) -> str:
         f"{item.get('pool')} {float(item.get('score') or 0):+.3f}" for item in contributions[:4]
     )
     suffix = f"；池贡献：{contribution_text}" if contribution_text else ""
-    return f"总分{final_score:.3f}（选股池{pool_score:+.3f}，技术{technical_score:+.3f}，新闻{news_score:+.3f}）{suffix}"
+    timing_text = f"，买点{entry_timing_score:+.3f}" if "entry_timing_score" in breakdown else ""
+    return f"总分{final_score:.3f}（选股池{pool_score:+.3f}，技术{technical_score:+.3f}{timing_text}，新闻{news_score:+.3f}）{suffix}"
 
 
 def strip_pool_prefix(text: str) -> str:
@@ -551,6 +571,8 @@ def technical_brief(technical: dict, technical_score: object) -> str:
     rsi = technical.get("rsi")
     volume_ratio = technical.get("volume_ratio")
     support = technical.get("support")
+    ma5 = technical.get("ma5")
+    ma10 = technical.get("ma10")
     ema21 = technical.get("ema21")
     if trend > 0.18:
         parts.append("趋势偏强")
@@ -568,6 +590,10 @@ def technical_brief(technical: dict, technical_score: object) -> str:
         parts.append(f"RSI {float(rsi):.1f}")
     if support is not None:
         parts.append(f"支撑{float(support):.2f}")
+    if ma5 is not None:
+        parts.append(f"5日线{float(ma5):.2f}")
+    if ma10 is not None:
+        parts.append(f"10日线{float(ma10):.2f}")
     if ema21 is not None:
         parts.append(f"21日线{float(ema21):.2f}")
     if technical_score is not None:

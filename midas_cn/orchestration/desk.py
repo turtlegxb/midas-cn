@@ -18,15 +18,15 @@ from midas_cn.pools.builder import AkShareStockPoolBuilder, latest_report_trade_
 from midas_cn.pools.storage import StockPoolArchive
 from midas_cn.pools.ths_cache import load_ths_sector_cache, symbol_classification
 from midas_cn.quality.gates import DataQualityGate
-from midas_cn.reports.builder import DailyReportBuilder
+from midas_cn.reports.builder import DailyReportBuilder, GENERIC_CONCEPT_TAGS, TOP_THEME_LIMIT
 from midas_cn.risk.engine import RiskEngine
 from midas_cn.scanners.opportunity import OpportunityScanner
 from midas_cn.social import XueqiuArchive, XueqiuTracker
 from midas_cn.storage.archive import DecisionArchive
 from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts
 from midas_cn.storage.report_archive import DailyReportArchive
-from midas_cn.storage.stock_sector_mapping import fetch_stock_sector_mappings
-from midas_cn.universe.symbols import normalize_symbols
+from midas_cn.storage.stock_sector_mapping import fetch_stock_sector_mappings, fetch_stock_sector_mappings_by_themes
+from midas_cn.universe.symbols import normalize_symbol, normalize_symbols
 
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -161,16 +161,25 @@ class TradingDesk:
         stock_pools = self._load_or_build_stock_pools(pool_trade_date, persist, emit)
         emit(9, "拉取雪球跟踪数据")
         xueqiu_snapshot = self._load_or_fetch_xueqiu(pool_trade_date, persist)
-        emit(10, "计算选股池技术指标")
-        pool_technical_profiles = self._build_pool_technical_profiles(stock_pools, emit)
+        emit(10, "识别热主题并扩展回调候选")
+        stock_sector_mappings, stock_sector_mapping_result = self._load_stock_sector_mappings([], stock_pools)
+        theme_pullback_pool, theme_mappings, theme_mapping_result = self._build_theme_pullback_pool(
+            stock_pools,
+            stock_sector_mappings,
+            pool_trade_date,
+        )
+        stock_sector_mappings = {**stock_sector_mappings, **theme_mappings}
+        if theme_mappings and theme_mapping_result:
+            stock_sector_mapping_result = theme_mapping_result
+        analysis_stock_pools = stock_pools + ([theme_pullback_pool] if theme_pullback_pool else [])
+        emit(11, "计算热主题回调候选技术指标")
+        pool_technical_profiles = self._build_pool_technical_profiles(analysis_stock_pools, emit)
         report_opportunities, _ = self.report_builder.rank_report_opportunities(
             opportunities,
             quality_gate,
-            stock_pools,
+            analysis_stock_pools,
             pool_technical_profiles,
         )
-        emit(11, "读取入选个股与股票池行业概念映射")
-        stock_sector_mappings, stock_sector_mapping_result = self._load_stock_sector_mappings(report_opportunities, stock_pools)
         emit(12, "补充个股最新新闻")
         opportunity_news_results = self._fetch_opportunity_news(report_opportunities)
         emit(13, "计算指数技术状态")
@@ -187,7 +196,7 @@ class TradingDesk:
             decisions=decisions,
             universe=universe,
             market_news_results=market_news_results,
-            stock_pools=stock_pools,
+            stock_pools=analysis_stock_pools,
             xueqiu_snapshot=xueqiu_snapshot,
             opportunity_news_results=opportunity_news_results,
             technical_profiles=pool_technical_profiles,
@@ -316,6 +325,173 @@ class TradingDesk:
     def _load_stock_sector_mappings_for_symbols(self, symbols: list[str]):
         return fetch_stock_sector_mappings(symbols, self.config.section("mongodb"))
 
+    def _build_theme_pullback_pool(
+        self,
+        stock_pools: list[StockPool],
+        stock_sector_mappings: dict[str, dict],
+        trade_date: str,
+    ) -> tuple[StockPool | None, dict[str, dict], object | None]:
+        pool_config = self.config.section("pools")
+        if not bool(pool_config.get("theme_pullback_enabled", True)):
+            return None, {}, None
+        theme_limit = int(pool_config.get("theme_pullback_theme_limit", TOP_THEME_LIMIT))
+        candidate_limit = int(pool_config.get("theme_pullback_candidate_limit", 80))
+        hot_themes = self._hot_themes_from_stock_pools(stock_pools, stock_sector_mappings, theme_limit)
+        if not hot_themes:
+            return None, {}, None
+        theme_names = [item["theme"] for item in hot_themes]
+        theme_mappings, result = fetch_stock_sector_mappings_by_themes(
+            theme_names,
+            self.config.section("mongodb"),
+            limit=candidate_limit,
+        )
+        entries = self._theme_pullback_entries(hot_themes, theme_mappings, stock_pools, candidate_limit)
+        if not entries:
+            return None, theme_mappings, result
+        return (
+            StockPool(
+                name="theme_pullback",
+                description="热门行业/概念回调候选",
+                entries=entries,
+                source="mongodb.stock_sector_mapping",
+                status=SourceStatus.SUCCESS,
+                as_of=trade_date,
+                error_message=None,
+            ),
+            theme_mappings,
+            result,
+        )
+
+    def _hot_themes_from_stock_pools(
+        self,
+        stock_pools: list[StockPool],
+        stock_sector_mappings: dict[str, dict],
+        limit: int,
+    ) -> list[dict[str, object]]:
+        theme_scores: dict[str, dict[str, object]] = {}
+        for pool in stock_pools:
+            if pool.status not in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}:
+                continue
+            for entry in pool.entries:
+                for theme in self._themes_for_stock_pool_entry(entry, stock_sector_mappings):
+                    item = theme_scores.setdefault(theme, {"theme": theme, "score": 0.0, "hits": 0})
+                    item["hits"] = int(item["hits"]) + 1
+                    item["score"] = float(item["score"]) + self._theme_heat_score(pool, entry)
+        ranked = sorted(theme_scores.values(), key=lambda item: (float(item["score"]), int(item["hits"])), reverse=True)
+        return ranked[:limit]
+
+    def _themes_for_stock_pool_entry(self, entry: StockPoolEntry, stock_sector_mappings: dict[str, dict]) -> list[str]:
+        code = entry.symbol.split(".", 1)[0].zfill(6)
+        mapping = stock_sector_mappings.get(code) or stock_sector_mappings.get(entry.symbol) or {}
+        themes = []
+        themes.extend(str(item).strip() for item in mapping.get("industry_sectors") or [])
+        themes.extend(
+            str(item).strip()
+            for item in mapping.get("concept_sectors") or []
+            if str(item).strip() not in GENERIC_CONCEPT_TAGS
+        )
+        fallback_industry = str(entry.metrics.get("所属行业") or "").strip()
+        if fallback_industry:
+            themes.append(fallback_industry)
+        return self._unique_themes(themes)[:TOP_THEME_LIMIT]
+
+    def _theme_heat_score(self, pool: StockPool, entry: StockPoolEntry) -> float:
+        weights = {
+            "limit_up": 3.0,
+            "broken_limit_up": 1.0,
+            "main_net_inflow_top20": 1.6,
+            "small_float_net_inflow_top20": 1.4,
+            "turnover_top20": 1.1,
+            "limit_down": -2.0,
+        }
+        base = weights.get(pool.name, 0.5)
+        rank_bonus = max(0.0, (21 - min(entry.rank, 20)) / 20) * abs(base) * 0.35
+        return base - rank_bonus if base < 0 else base + rank_bonus
+
+    def _theme_pullback_entries(
+        self,
+        hot_themes: list[dict[str, object]],
+        theme_mappings: dict[str, dict],
+        stock_pools: list[StockPool],
+        limit: int,
+    ) -> list[StockPoolEntry]:
+        if not theme_mappings:
+            return []
+        theme_rank = {str(item["theme"]): index for index, item in enumerate(hot_themes)}
+        theme_score = {str(item["theme"]): float(item.get("score") or 0) for item in hot_themes}
+        blocked_symbols = {
+            entry.symbol
+            for pool in stock_pools
+            if pool.name in {"limit_up", "broken_limit_up"}
+            for entry in pool.entries
+        }
+        rows = []
+        for code, mapping in theme_mappings.items():
+            try:
+                symbol = normalize_symbol(code)
+            except ValueError:
+                continue
+            if symbol in blocked_symbols:
+                continue
+            matched_themes = self._matched_hot_themes(mapping, theme_rank)
+            if not matched_themes:
+                continue
+            best_rank = min(theme_rank[theme] for theme in matched_themes)
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "name": str(mapping.get("stock_name") or symbol),
+                    "rank_score": (best_rank, -max(theme_score[theme] for theme in matched_themes), symbol),
+                    "themes": matched_themes,
+                    "mapping": mapping,
+                }
+            )
+        rows = sorted(rows, key=lambda item: item["rank_score"])[:limit]
+        entries = []
+        for rank, row in enumerate(rows, start=1):
+            mapping = row["mapping"]
+            concepts = [
+                concept
+                for concept in list(mapping.get("concept_sectors") or [])
+                if str(concept).strip() not in GENERIC_CONCEPT_TAGS
+            ][:8]
+            entries.append(
+                StockPoolEntry(
+                    symbol=str(row["symbol"]),
+                    name=str(row["name"]),
+                    reason="热门行业/概念内回调候选",
+                    rank=rank,
+                    metrics={
+                        "热主题": list(row["themes"])[:TOP_THEME_LIMIT],
+                        "所属行业": ";".join(mapping.get("industry_sectors") or []),
+                        "概念": concepts,
+                        "映射来源": "mongodb.stock_sector_mapping",
+                    },
+                )
+            )
+        return entries
+
+    def _matched_hot_themes(self, mapping: dict, theme_rank: dict[str, int]) -> list[str]:
+        themes = []
+        themes.extend(str(item).strip() for item in mapping.get("industry_sectors") or [])
+        themes.extend(
+            str(item).strip()
+            for item in mapping.get("concept_sectors") or []
+            if str(item).strip() not in GENERIC_CONCEPT_TAGS
+        )
+        return [theme for theme in self._unique_themes(themes) if theme in theme_rank]
+
+    def _unique_themes(self, themes) -> list[str]:
+        items = []
+        seen = set()
+        for theme in themes:
+            value = str(theme or "").strip()
+            if not value or value in seen:
+                continue
+            items.append(value)
+            seen.add(value)
+        return items
+
     def _apply_stock_sector_mapping_to_security(
         self,
         security: SecurityContext,
@@ -391,6 +567,7 @@ class TradingDesk:
             "limit_up": 0.34,
             "broken_limit_up": 0.12,
             "limit_down": -0.42,
+            "theme_pullback": 0.34,
         }
         scores = {}
         for pool in stock_pools:
