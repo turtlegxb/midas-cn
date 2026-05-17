@@ -965,6 +965,31 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(theme["raw_score"], 4.2)
         self.assertEqual([item["symbol"] for item in theme["symbols"]], ["300001.SZ", "300002.SZ"])
 
+    def test_theme_rotation_keeps_pure_heat_out_of_main_themes(self):
+        builder = DailyReportBuilder()
+        pools = [
+            StockPool(
+                name="main_net_inflow_top20",
+                description="主力净流入Top20",
+                entries=[
+                    StockPoolEntry(f"30000{index}.SZ", f"热度{index}", "主力净流入", index, {})
+                    for index in range(1, 6)
+                ],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+        mappings = {
+            f"30000{index}": {"industry_sectors": ["高覆盖主题"], "concept_sectors": []}
+            for index in range(1, 6)
+        }
+
+        rotation = builder._theme_rotation_analysis(pools, [], mappings, {"高覆盖主题": 5})
+
+        self.assertNotIn("高覆盖主题", [item["theme"] for item in rotation["main_themes"]])
+        self.assertIn("高覆盖主题", [item["theme"] for item in rotation["watch_themes"]])
+
     def test_capacity_adjusted_score_penalizes_large_low_coverage_themes(self):
         builder = DailyReportBuilder()
 

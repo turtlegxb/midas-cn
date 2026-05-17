@@ -1379,7 +1379,11 @@ class DailyReportBuilder:
 
         ranked = sorted(theme_stats.values(), key=lambda item: (item["score"], item["coverage"], item["hits"]), reverse=True)
         rows = [self._theme_row(item) for item in ranked]
-        main_themes = [item for item in rows if item["score"] >= 3.2 and item["limit_down"] == 0][:5]
+        main_themes = [
+            item
+            for item in rows
+            if item["score"] >= 3.2 and item["limit_down"] == 0 and self._theme_has_quality_signal(item)
+        ][:5]
         main_theme_names = {item["theme"] for item in main_themes}
         watch_themes = [item for item in rows if item["score"] > 0 and item["theme"] not in main_theme_names][:5]
         risk_themes = [item for item in rows if item["limit_down"] > 0 or item["broken_limit_up"] >= 2][:5]
@@ -1419,7 +1423,14 @@ class DailyReportBuilder:
             return 1.2
         if pool_name == "limit_down":
             return -2.0
-        return 1.5
+        return 0.8
+
+    def _theme_has_quality_signal(self, item: dict) -> bool:
+        return (
+            int(item.get("limit_up") or 0) > 0
+            or int(item.get("broken_limit_up") or 0) > 0
+            or int(item.get("turnover") or 0) > 0
+        )
 
     def _capacity_adjusted_theme_score(
         self,
@@ -1430,11 +1441,11 @@ class DailyReportBuilder:
     ) -> float:
         if capacity <= 0 or raw_score < 0:
             return raw_score
-        size_factor = min(2.0, max(0.25, math.sqrt(100.0 / capacity)))
-        coverage_points = min(coverage * 100.0, 20.0)
-        coverage_confidence = min(1.0, max(covered_symbols, 0) / 3.0)
-        breadth_points = min(math.sqrt(max(covered_symbols, 0)), 6.0)
-        return raw_score * size_factor * 0.7 + coverage_points * 2.0 * coverage_confidence + breadth_points
+        size_factor = min(1.6, max(0.25, math.sqrt(80.0 / capacity)))
+        coverage_points = min(coverage * 100.0, 12.0)
+        coverage_confidence = min(1.0, max(covered_symbols, 0) / 4.0)
+        breadth_points = min(math.log1p(max(covered_symbols, 0)), 2.5)
+        return raw_score * size_factor * 0.85 + coverage_points * 0.8 * coverage_confidence + breadth_points
 
     def _theme_candidates_for_pool_entry(
         self,
