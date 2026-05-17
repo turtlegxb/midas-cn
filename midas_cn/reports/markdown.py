@@ -102,7 +102,7 @@ class MarkdownReportRenderer:
         if theme_rotation.get("main_themes"):
             lines.extend([
                 "",
-                "| 主线候选 | 调整强度 | 覆盖率 | 容量 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
+                "| 主线候选 | 综合强度 | 覆盖率 | 容量 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
                 "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ])
             for item in theme_rotation.get("main_themes", []):
@@ -110,7 +110,7 @@ class MarkdownReportRenderer:
         if theme_rotation.get("watch_themes"):
             lines.extend([
                 "",
-                "| 轮动观察 | 调整强度 | 覆盖率 | 容量 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
+                "| 轮动观察 | 综合强度 | 覆盖率 | 容量 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
                 "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ])
             for item in theme_rotation.get("watch_themes", [])[:5]:
@@ -118,7 +118,7 @@ class MarkdownReportRenderer:
         if theme_rotation.get("risk_themes"):
             lines.extend([
                 "",
-                "| 分歧/风险主题 | 调整强度 | 覆盖率 | 容量 | 跌停 | 炸板 | 代表标的 | 判断 |",
+                "| 分歧/风险主题 | 综合强度 | 覆盖率 | 容量 | 跌停 | 炸板 | 代表标的 | 判断 |",
                 "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ])
             for item in theme_rotation.get("risk_themes", [])[:5]:
