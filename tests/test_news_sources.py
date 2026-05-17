@@ -147,13 +147,13 @@ class NewsSourceTest(unittest.TestCase):
 
         class FakeAkshare:
             def stock_zh_a_disclosure_report_cninfo(self, **kwargs):
-                return [{"公告标题": "巨潮公告", "公告日期": "2026-05-14"}]
+                return [{"公告标题": "巨潮公告", "公告日期": "2026-05-17"}]
 
             def stock_individual_notice_report(self, **kwargs):
-                return [{"公告标题": "东方财富公告", "公告日期": "2026-05-14"}]
+                return [{"公告标题": "东方财富公告", "公告日期": "2026-05-17"}]
 
             def stock_news_em(self, **kwargs):
-                return [{"新闻标题": "东方财富新闻", "发布时间": "2026-05-14 10:00:00"}]
+                return [{"新闻标题": "东方财富新闻", "发布时间": "2026-05-17 10:00:00"}]
 
         provider.akshare = FakeAkshare()
 
@@ -168,10 +168,10 @@ class NewsSourceTest(unittest.TestCase):
 
         class FakeAkshare:
             def news_cctv(self, **kwargs):
-                return [{"标题": "央视政策", "日期": "2026-05-14"}]
+                return [{"标题": "央视政策", "日期": "2026-05-17"}]
 
             def stock_info_global_em(self):
-                return [{"标题": "东方财富市场新闻", "日期": "2026-05-14"}]
+                return [{"标题": "东方财富市场新闻", "日期": "2026-05-17"}]
 
         provider.akshare = FakeAkshare()
 

@@ -77,6 +77,7 @@ def _load_env_files(config_path: Path) -> None:
     project_env = PROJECT_ROOT / ".env"
     if project_env != config_env:
         candidates.append(project_env)
+    candidates.append(Path.home() / ".bashrc")
     for env_path in candidates:
         if env_path.exists():
             _load_env_file(env_path)

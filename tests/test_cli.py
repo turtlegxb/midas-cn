@@ -165,6 +165,25 @@ enabled = false
                 else:
                     os.environ["XUEQIU_COOKIE"] = old_cookie
 
+    def test_config_loads_simple_exports_from_bashrc(self):
+        import midas_cn.config as config_module
+
+        with TemporaryDirectory() as temp_dir:
+            config_path = self.write_config(temp_dir)
+            bashrc = Path(temp_dir) / ".bashrc"
+            bashrc.write_text('export MONGODB_URI="mongodb://from-bashrc"\n', encoding="utf-8")
+            old_uri = os.environ.pop("MONGODB_URI", None)
+            original_home = config_module.Path.home
+            config_module.Path.home = classmethod(lambda cls: Path(temp_dir))
+            try:
+                config_module.load_config(config_path)
+                self.assertEqual(os.environ.get("MONGODB_URI"), "mongodb://from-bashrc")
+            finally:
+                config_module.Path.home = original_home
+                os.environ.pop("MONGODB_URI", None)
+                if old_uri is not None:
+                    os.environ["MONGODB_URI"] = old_uri
+
 
 if __name__ == "__main__":
     unittest.main()
