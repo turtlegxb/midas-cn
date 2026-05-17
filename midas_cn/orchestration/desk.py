@@ -25,7 +25,11 @@ from midas_cn.social import XueqiuArchive, XueqiuTracker
 from midas_cn.storage.archive import DecisionArchive
 from midas_cn.storage.data_cache import DataCache, kline_bars_from_dicts
 from midas_cn.storage.report_archive import DailyReportArchive
-from midas_cn.storage.stock_sector_mapping import fetch_stock_sector_mappings, fetch_stock_sector_mappings_by_themes
+from midas_cn.storage.stock_sector_mapping import (
+    fetch_stock_sector_capacities,
+    fetch_stock_sector_mappings,
+    fetch_stock_sector_mappings_by_themes,
+)
 from midas_cn.universe.symbols import normalize_symbol, normalize_symbols
 
 
@@ -163,6 +167,7 @@ class TradingDesk:
         xueqiu_snapshot = self._load_or_fetch_xueqiu(pool_trade_date, persist)
         emit(10, "识别热主题并扩展回调候选")
         stock_sector_mappings, stock_sector_mapping_result = self._load_stock_sector_mappings([], stock_pools)
+        stock_sector_capacities, stock_sector_capacity_result = self._load_stock_sector_capacities()
         theme_pullback_pool, theme_mappings, theme_mapping_result = self._build_theme_pullback_pool(
             stock_pools,
             stock_sector_mappings,
@@ -203,6 +208,8 @@ class TradingDesk:
             index_profiles=index_profiles,
             stock_sector_mappings=stock_sector_mappings,
             stock_sector_mapping_result=stock_sector_mapping_result,
+            stock_sector_capacities=stock_sector_capacities,
+            stock_sector_capacity_result=stock_sector_capacity_result,
         )
         paths: dict[str, str] = {}
         if persist:
@@ -324,6 +331,9 @@ class TradingDesk:
 
     def _load_stock_sector_mappings_for_symbols(self, symbols: list[str]):
         return fetch_stock_sector_mappings(symbols, self.config.section("mongodb"))
+
+    def _load_stock_sector_capacities(self):
+        return fetch_stock_sector_capacities(self.config.section("mongodb"))
 
     def _build_theme_pullback_pool(
         self,

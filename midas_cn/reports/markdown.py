@@ -96,34 +96,36 @@ class MarkdownReportRenderer:
             "",
             f"- 轮动阶段：{theme_rotation.get('stage', '暂无')}",
             f"- 数据源：{source_label(theme_rotation.get('source', 'stock_pool.metrics'))}",
+            f"- 容量口径：{source_label(theme_rotation.get('capacity_source', 'missing'))}",
             f"- 综合判断：{theme_rotation.get('summary', '暂无')}",
         ])
         if theme_rotation.get("main_themes"):
             lines.extend([
                 "",
-                "| 主线候选 | 强度分 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                "| 主线候选 | 调整强度 | 覆盖率 | 容量 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ])
             for item in theme_rotation.get("main_themes", []):
                 lines.append(theme_row(item))
         if theme_rotation.get("watch_themes"):
             lines.extend([
                 "",
-                "| 轮动观察 | 强度分 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
-                "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+                "| 轮动观察 | 调整强度 | 覆盖率 | 容量 | 命中 | 涨停 | 炸板 | 换手 | 代表标的 | 判断 |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ])
             for item in theme_rotation.get("watch_themes", [])[:5]:
                 lines.append(theme_row(item))
         if theme_rotation.get("risk_themes"):
             lines.extend([
                 "",
-                "| 分歧/风险主题 | 强度分 | 跌停 | 炸板 | 代表标的 | 判断 |",
-                "| --- | ---: | ---: | ---: | --- | --- |",
+                "| 分歧/风险主题 | 调整强度 | 覆盖率 | 容量 | 跌停 | 炸板 | 代表标的 | 判断 |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
             ])
             for item in theme_rotation.get("risk_themes", [])[:5]:
                 symbols = symbol_list(item.get("symbols", []))
                 lines.append(
-                    f"| {item.get('theme')} | {item.get('score')} | {item.get('limit_down')} | "
+                    f"| {item.get('theme')} | {item.get('score')} | {theme_coverage_text(item)} | "
+                    f"{item.get('capacity') or '未知'} | {item.get('limit_down')} | "
                     f"{item.get('broken_limit_up')} | {symbols} | {item.get('judgement')} |"
                 )
 
@@ -477,10 +479,19 @@ def mapped_symbol_list(items: list[dict]) -> str:
 
 def theme_row(item: dict) -> str:
     return (
-        f"| {item.get('theme')} | {item.get('score')} | {item.get('hits')} | "
+        f"| {item.get('theme')} | {item.get('score')} | {theme_coverage_text(item)} | "
+        f"{item.get('capacity') or '未知'} | {item.get('hits')} | "
         f"{item.get('limit_up')} | {item.get('broken_limit_up')} | {item.get('turnover')} | "
         f"{symbol_list(item.get('symbols', []))} | {item.get('judgement')} |"
     )
+
+
+def theme_coverage_text(item: dict) -> str:
+    capacity = int(item.get("capacity") or 0)
+    covered = int(item.get("covered_symbols") or 0)
+    if capacity <= 0:
+        return "未知"
+    return f"{covered / capacity:.1%}"
 
 
 def opportunity_card(item) -> list[str]:

@@ -157,6 +157,75 @@ def fetch_stock_sector_mappings_by_themes(
     )
 
 
+def fetch_stock_sector_capacities(config: dict[str, Any]) -> tuple[dict[str, int], SourceResult]:
+    enabled = bool(config.get("enabled", False))
+    if not enabled:
+        return {}, _result(SourceStatus.MISSING, error_message="MongoDB stock sector mapping disabled", data="行业/概念容量")
+
+    env_name = str(config.get("uri_env") or "MONGODB_URI")
+    uri = os.environ.get(env_name)
+    if not uri:
+        return {}, _result(SourceStatus.MISSING, error_type="missing_env", error_message=f"{env_name} is not set", data="行业/概念容量")
+
+    try:
+        from pymongo import MongoClient
+    except Exception as exc:
+        return {}, _result(
+            SourceStatus.FAILED,
+            error_type=type(exc).__name__,
+            error_message="pymongo is not installed",
+            data="行业/概念容量",
+        )
+
+    database = str(config.get("database") or "sunny_day")
+    collection = str(config.get("collection") or "stock_sector_mapping")
+    timeout_ms = int(config.get("timeout_ms", 8000))
+    client = MongoClient(uri, serverSelectionTimeoutMS=timeout_ms, connectTimeoutMS=timeout_ms, socketTimeoutMS=timeout_ms)
+    try:
+        client.admin.command("ping")
+        rows = list(
+            client[database][collection].find(
+                {},
+                {
+                    "_id": 0,
+                    "stock_code": 1,
+                    "industry_sectors": 1,
+                    "concept_sectors": 1,
+                },
+            )
+        )
+    except Exception as exc:
+        return {}, _result(
+            SourceStatus.FAILED,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            context={"database": database, "collection": collection},
+            data="行业/概念容量",
+        )
+    finally:
+        client.close()
+
+    theme_symbols: dict[str, set[str]] = {}
+    for row in rows:
+        code = _normalize_mapping_key(row.get("stock_code"))
+        if not code:
+            continue
+        themes = _split_sectors(row.get("industry_sectors")) + _split_sectors(row.get("concept_sectors"))
+        for theme in themes:
+            theme_symbols.setdefault(theme, set()).add(code)
+    capacities = {theme: len(codes) for theme, codes in theme_symbols.items()}
+    return capacities, _result(
+        SourceStatus.SUCCESS if capacities else SourceStatus.MISSING,
+        context={
+            "database": database,
+            "collection": collection,
+            "mapped_symbols": str(len(rows)),
+            "themes": str(len(capacities)),
+        },
+        data="行业/概念容量",
+    )
+
+
 def _theme_query(themes: list[str]) -> dict:
     clauses = []
     for theme in themes:
@@ -220,9 +289,10 @@ def _result(
     error_type: str | None = None,
     error_message: str | None = None,
     context: dict[str, str] | None = None,
+    data: str = "入选个股行业/概念映射",
 ) -> SourceResult:
     return SourceResult(
-        data="入选个股行业/概念映射",
+        data=data,
         source=SOURCE_NAME,
         provider="MongoDB",
         status=status,

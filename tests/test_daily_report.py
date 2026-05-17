@@ -875,6 +875,48 @@ class DailyReportTest(unittest.TestCase):
         self.assertNotIn("旧行业", themes)
         self.assertNotIn("融资融券", themes)
 
+    def test_theme_rotation_uses_capacity_adjusted_strength(self):
+        builder = DailyReportBuilder()
+        entries = [
+            StockPoolEntry("300001.SZ", "大主题1", "当日涨停", 1, {}),
+            StockPoolEntry("300002.SZ", "大主题2", "当日涨停", 2, {}),
+            StockPoolEntry("300003.SZ", "大主题3", "当日涨停", 3, {}),
+            StockPoolEntry("300004.SZ", "大主题4", "当日涨停", 4, {}),
+            StockPoolEntry("300005.SZ", "小主题1", "当日涨停", 5, {}),
+            StockPoolEntry("300006.SZ", "小主题2", "当日涨停", 6, {}),
+        ]
+        pools = [
+            StockPool(
+                name="limit_up",
+                description="当日涨停，不含ST",
+                entries=entries,
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+        mappings = {
+            f"30000{index}": {
+                "stock_code": f"30000{index}",
+                "stock_name": f"样本{index}",
+                "industry_sectors": ["大主题" if index <= 4 else "小主题"],
+                "concept_sectors": [],
+            }
+            for index in range(1, 7)
+        }
+
+        rotation = builder._theme_rotation_analysis(
+            pools,
+            [],
+            mappings,
+            {"大主题": 400, "小主题": 10},
+        )
+
+        self.assertEqual(rotation["main_themes"][0]["theme"], "小主题")
+        self.assertEqual(rotation["main_themes"][0]["capacity"], 10)
+        self.assertEqual(rotation["main_themes"][0]["covered_symbols"], 2)
+        self.assertGreater(rotation["main_themes"][0]["score"], rotation["main_themes"][0]["raw_score"])
+
     def test_opportunity_news_score_treats_share_freeze_as_negative(self):
         builder = DailyReportBuilder()
         items = [

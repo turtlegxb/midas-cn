@@ -108,6 +108,8 @@ class DailyReportBuilder:
         index_profiles: dict[str, dict] | None = None,
         stock_sector_mappings: dict[str, dict] | None = None,
         stock_sector_mapping_result: SourceResult | None = None,
+        stock_sector_capacities: dict[str, int] | None = None,
+        stock_sector_capacity_result: SourceResult | None = None,
     ) -> DailyReport:
         report_opportunities, hidden_opportunities = self.rank_report_opportunities(
             opportunities,
@@ -135,7 +137,12 @@ class DailyReportBuilder:
         index_state = self._index_state(market, index_profiles or {})
         sentiment_breadth = self._market_sentiment_breadth(calendar, market, market_news_results or [])
         pool_analysis = self._stock_pool_analysis(stock_pools or [])
-        theme_rotation = self._theme_rotation_analysis(stock_pools or [], report_opportunities, stock_sector_mappings or {})
+        theme_rotation = self._theme_rotation_analysis(
+            stock_pools or [],
+            report_opportunities,
+            stock_sector_mappings or {},
+            stock_sector_capacities or {},
+        )
         selected_sector_mapping = self._selected_sector_mapping_summary(report_opportunities, stock_sector_mapping_result)
         xueqiu_tracking = self._xueqiu_tracking_analysis(xueqiu_snapshot, stock_pools or [], report_opportunities)
         xueqiu_insights, xueqiu_llm_result = self.llm_synthesis.synthesize_xueqiu_ticker_views(
@@ -201,6 +208,7 @@ class DailyReportBuilder:
                 opportunity_news_synthesis_result,
                 xueqiu_llm_result,
                 stock_sector_mapping_result,
+                stock_sector_capacity_result,
             ),
             decisions=decisions,
             metadata={
@@ -214,6 +222,7 @@ class DailyReportBuilder:
                     opportunity_news_synthesis_result,
                     xueqiu_llm_result,
                     stock_sector_mapping_result,
+                    stock_sector_capacity_result,
                 ),
                 "source_health": self._source_health(
                     opportunities,
@@ -224,6 +233,7 @@ class DailyReportBuilder:
                     opportunity_news_synthesis_result,
                     xueqiu_llm_result,
                     stock_sector_mapping_result,
+                    stock_sector_capacity_result,
                 ),
                 "overall_review": overall_review,
                 "index_state": index_state,
@@ -966,6 +976,7 @@ class DailyReportBuilder:
         opportunity_news_llm_result: SourceResult | None = None,
         xueqiu_llm_result: SourceResult | None = None,
         stock_sector_mapping_result: SourceResult | None = None,
+        stock_sector_capacity_result: SourceResult | None = None,
     ) -> list[dict[str, str]]:
         security_news_status = self._merge_source_status(
             item.evidence.get("news_source_status", {}) for item in opportunities
@@ -1011,6 +1022,14 @@ class DailyReportBuilder:
                     "data": stock_sector_mapping_result.data,
                     "source": stock_sector_mapping_result.source,
                     "status": stock_sector_mapping_result.status.value,
+                }
+            )
+        if stock_sector_capacity_result:
+            rows.append(
+                {
+                    "data": stock_sector_capacity_result.data,
+                    "source": stock_sector_capacity_result.source,
+                    "status": stock_sector_capacity_result.status.value,
                 }
             )
         if opportunity_news_llm_result and not llm_news_status:
@@ -1069,6 +1088,7 @@ class DailyReportBuilder:
         opportunity_news_llm_result: SourceResult | None = None,
         xueqiu_llm_result: SourceResult | None = None,
         stock_sector_mapping_result: SourceResult | None = None,
+        stock_sector_capacity_result: SourceResult | None = None,
     ) -> list[dict]:
         security_results: list[dict] = []
         seen: set[tuple[str, str, str | None]] = set()
@@ -1103,6 +1123,8 @@ class DailyReportBuilder:
             results.extend(source_results_to_dicts([xueqiu_llm_result]))
         if stock_sector_mapping_result:
             results.extend(source_results_to_dicts([stock_sector_mapping_result]))
+        if stock_sector_capacity_result:
+            results.extend(source_results_to_dicts([stock_sector_capacity_result]))
         has_symbol_news_llm = any(result.get("data") == "个股新闻解读" for result in security_results)
         if opportunity_news_llm_result and not has_symbol_news_llm:
             results.extend(source_results_to_dicts([opportunity_news_llm_result]))
@@ -1118,6 +1140,7 @@ class DailyReportBuilder:
         opportunity_news_llm_result: SourceResult | None = None,
         xueqiu_llm_result: SourceResult | None = None,
         stock_sector_mapping_result: SourceResult | None = None,
+        stock_sector_capacity_result: SourceResult | None = None,
     ) -> list[dict]:
         results = self._source_results(
             opportunities,
@@ -1128,6 +1151,7 @@ class DailyReportBuilder:
             opportunity_news_llm_result,
             xueqiu_llm_result,
             stock_sector_mapping_result,
+            stock_sector_capacity_result,
         )
         grouped: dict[tuple[str, str], dict] = {}
         for result in results:
@@ -1267,6 +1291,7 @@ class DailyReportBuilder:
         stock_pools: list[StockPool],
         opportunities: list[Opportunity],
         stock_sector_mappings: dict[str, dict] | None = None,
+        stock_sector_capacities: dict[str, int] | None = None,
     ) -> dict:
         usable_pools = [pool for pool in stock_pools if pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
         if not usable_pools:
@@ -1277,12 +1302,14 @@ class DailyReportBuilder:
                 "watch_themes": [],
                 "risk_themes": [],
                 "source": "stock_pool.metrics",
+                "capacity_source": "missing",
             }
 
         theme_stats: dict[str, dict] = {}
         symbol_score = {item.symbol: item.score for item in opportunities}
         opportunities_by_symbol = {item.symbol: item for item in opportunities}
         mappings = stock_sector_mappings or {}
+        capacities = stock_sector_capacities or {}
         mapped_hits = 0
         for pool in usable_pools:
             for entry in pool.entries:
@@ -1302,29 +1329,42 @@ class DailyReportBuilder:
                             "turnover": 0,
                             "limit_down": 0,
                             "symbols": [],
+                            "unique_symbols": set(),
                             "score": 0.0,
+                            "raw_score": 0.0,
                             "source": source,
                         },
                     )
                     stat["hits"] += 1
                     stat["symbols"].append({"symbol": entry.symbol, "name": entry.name, "pool": pool.name})
+                    stat["unique_symbols"].add(entry.symbol)
                     if pool.name == "limit_up":
                         stat["limit_up"] += 1
-                        stat["score"] += 3.0
+                        stat["raw_score"] += 3.0
                     elif pool.name == "broken_limit_up":
                         stat["broken_limit_up"] += 1
-                        stat["score"] += 1.0
+                        stat["raw_score"] += 1.0
                     elif pool.name == "turnover_top20":
                         stat["turnover"] += 1
-                        stat["score"] += 1.2
+                        stat["raw_score"] += 1.2
                     elif pool.name == "limit_down":
                         stat["limit_down"] += 1
-                        stat["score"] -= 2.0
+                        stat["raw_score"] -= 2.0
                     else:
-                        stat["score"] += 1.5
-                    stat["score"] += max(symbol_score.get(entry.symbol, 0.0), 0) * 0.35
+                        stat["raw_score"] += 1.5
+                    stat["raw_score"] += max(symbol_score.get(entry.symbol, 0.0), 0) * 0.35
 
-        ranked = sorted(theme_stats.values(), key=lambda item: (item["score"], item["hits"]), reverse=True)
+        for stat in theme_stats.values():
+            capacity = int(capacities.get(str(stat["theme"])) or 0)
+            covered_symbols = len(stat.get("unique_symbols") or [])
+            coverage = covered_symbols / capacity if capacity > 0 else 0.0
+            raw_score = float(stat.get("raw_score") or 0.0)
+            stat["capacity"] = capacity
+            stat["covered_symbols"] = covered_symbols
+            stat["coverage"] = coverage
+            stat["score"] = self._capacity_adjusted_theme_score(raw_score, coverage, capacity)
+
+        ranked = sorted(theme_stats.values(), key=lambda item: (item["score"], item["coverage"], item["hits"]), reverse=True)
         rows = [self._theme_row(item) for item in ranked]
         main_themes = [item for item in rows if item["score"] >= 3.2 and item["limit_down"] == 0][:5]
         main_theme_names = {item["theme"] for item in main_themes}
@@ -1335,11 +1375,13 @@ class DailyReportBuilder:
             leader_text = "、".join(item["theme"] for item in main_themes[:3])
             stage = "主线扩散" if any(item["limit_up"] >= 2 for item in main_themes) else "轮动试探"
             source_note = "MongoDB行业/概念映射" if mapped_hits else "选股池行业字段"
-            summary = f"板块线索基于{source_note}，集中在{leader_text}；当前更接近{stage}，次日重点看前排封单、后排换手和炸板修复。"
+            capacity_note = "，并按板块容量修正强度" if capacities else ""
+            summary = f"板块线索基于{source_note}{capacity_note}，集中在{leader_text}；当前更接近{stage}，次日重点看前排封单、后排换手和炸板修复。"
         elif watch_themes:
             stage = "快速轮动"
             source_note = "MongoDB行业/概念映射" if mapped_hits else "选股池行业字段"
-            summary = f"板块线索基于{source_note}，热点较分散，尚未形成清晰主线；优先观察换手承接，不追单日脉冲。"
+            capacity_note = "，并按板块容量修正强度" if capacities else ""
+            summary = f"板块线索基于{source_note}{capacity_note}，热点较分散，尚未形成清晰主线；优先观察换手承接，不追单日脉冲。"
         else:
             stage = "退潮观察"
             summary = "可用池未给出有效板块合力，先按退潮处理。"
@@ -1350,8 +1392,15 @@ class DailyReportBuilder:
             "watch_themes": watch_themes,
             "risk_themes": risk_themes,
             "source": "mongodb.stock_sector_mapping" if mapped_hits else "stock_pool.metrics",
+            "capacity_source": "mongodb.stock_sector_mapping" if capacities else "missing",
             "mapped_hits": mapped_hits,
         }
+
+    def _capacity_adjusted_theme_score(self, raw_score: float, coverage: float, capacity: int) -> float:
+        if capacity <= 0 or raw_score < 0:
+            return raw_score
+        coverage_points = min(coverage * 100.0, 12.0)
+        return raw_score * 0.65 + coverage_points * 1.8
 
     def _theme_candidates_for_pool_entry(
         self,
@@ -1644,7 +1693,11 @@ class DailyReportBuilder:
         return {
             "theme": item["theme"],
             "score": round(item["score"], 2),
+            "raw_score": round(float(item.get("raw_score") or item.get("score") or 0), 2),
             "hits": item["hits"],
+            "capacity": int(item.get("capacity") or 0),
+            "covered_symbols": int(item.get("covered_symbols") or 0),
+            "coverage": round(float(item.get("coverage") or 0.0), 4),
             "limit_up": item["limit_up"],
             "broken_limit_up": item["broken_limit_up"],
             "turnover": item["turnover"],
