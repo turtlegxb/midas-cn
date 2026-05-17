@@ -1310,14 +1310,14 @@ class DailyReportBuilder:
         opportunities_by_symbol = {item.symbol: item for item in opportunities}
         mappings = stock_sector_mappings or {}
         capacities = stock_sector_capacities or {}
-        mapped_hits = 0
+        mapped_symbols: set[str] = set()
         for pool in usable_pools:
             for entry in pool.entries:
                 themes, source = self._theme_candidates_for_pool_entry(entry, opportunities_by_symbol, mappings)
                 if not themes:
                     continue
                 if source == "mongodb.stock_sector_mapping":
-                    mapped_hits += 1
+                    mapped_symbols.add(entry.symbol)
                 for theme in themes:
                     stat = theme_stats.setdefault(
                         theme,
@@ -1330,38 +1330,51 @@ class DailyReportBuilder:
                             "limit_down": 0,
                             "symbols": [],
                             "unique_symbols": set(),
+                            "symbol_scores": {},
+                            "limit_up_symbols": set(),
+                            "broken_limit_up_symbols": set(),
+                            "turnover_symbols": set(),
+                            "limit_down_symbols": set(),
                             "score": 0.0,
                             "raw_score": 0.0,
                             "source": source,
                         },
                     )
-                    stat["hits"] += 1
-                    stat["symbols"].append({"symbol": entry.symbol, "name": entry.name, "pool": pool.name})
+                    if entry.symbol not in stat["unique_symbols"]:
+                        stat["symbols"].append({"symbol": entry.symbol, "name": entry.name, "pool": pool.name})
                     stat["unique_symbols"].add(entry.symbol)
+                    score = self._theme_pool_score(pool.name)
                     if pool.name == "limit_up":
-                        stat["limit_up"] += 1
-                        stat["raw_score"] += 3.0
+                        stat["limit_up_symbols"].add(entry.symbol)
                     elif pool.name == "broken_limit_up":
-                        stat["broken_limit_up"] += 1
-                        stat["raw_score"] += 1.0
+                        stat["broken_limit_up_symbols"].add(entry.symbol)
                     elif pool.name == "turnover_top20":
-                        stat["turnover"] += 1
-                        stat["raw_score"] += 1.2
+                        stat["turnover_symbols"].add(entry.symbol)
                     elif pool.name == "limit_down":
-                        stat["limit_down"] += 1
-                        stat["raw_score"] -= 2.0
-                    else:
-                        stat["raw_score"] += 1.5
-                    stat["raw_score"] += max(symbol_score.get(entry.symbol, 0.0), 0) * 0.35
+                        stat["limit_down_symbols"].add(entry.symbol)
+                    current_score = stat["symbol_scores"].get(entry.symbol)
+                    if current_score is None:
+                        stat["symbol_scores"][entry.symbol] = score
+                    elif score < 0:
+                        stat["symbol_scores"][entry.symbol] = min(current_score, score)
+                    elif current_score >= 0:
+                        stat["symbol_scores"][entry.symbol] = max(current_score, score)
 
         for stat in theme_stats.values():
             capacity = int(capacities.get(str(stat["theme"])) or 0)
             covered_symbols = len(stat.get("unique_symbols") or [])
             coverage = covered_symbols / capacity if capacity > 0 else 0.0
-            raw_score = float(stat.get("raw_score") or 0.0)
+            stat["hits"] = covered_symbols
+            stat["limit_up"] = len(stat.get("limit_up_symbols") or [])
+            stat["broken_limit_up"] = len(stat.get("broken_limit_up_symbols") or [])
+            stat["turnover"] = len(stat.get("turnover_symbols") or [])
+            stat["limit_down"] = len(stat.get("limit_down_symbols") or [])
+            raw_score = sum(float(score) for score in (stat.get("symbol_scores") or {}).values())
+            raw_score += sum(max(symbol_score.get(symbol, 0.0), 0) * 0.35 for symbol in stat.get("unique_symbols") or [])
             stat["capacity"] = capacity
             stat["covered_symbols"] = covered_symbols
             stat["coverage"] = coverage
+            stat["raw_score"] = raw_score
             stat["score"] = self._capacity_adjusted_theme_score(raw_score, coverage, capacity, covered_symbols)
 
         ranked = sorted(theme_stats.values(), key=lambda item: (item["score"], item["coverage"], item["hits"]), reverse=True)
@@ -1370,6 +1383,7 @@ class DailyReportBuilder:
         main_theme_names = {item["theme"] for item in main_themes}
         watch_themes = [item for item in rows if item["score"] > 0 and item["theme"] not in main_theme_names][:5]
         risk_themes = [item for item in rows if item["limit_down"] > 0 or item["broken_limit_up"] >= 2][:5]
+        mapped_hits = len(mapped_symbols)
 
         if main_themes:
             leader_text = "、".join(item["theme"] for item in main_themes[:3])
@@ -1395,6 +1409,17 @@ class DailyReportBuilder:
             "capacity_source": "mongodb.stock_sector_mapping" if capacities else "missing",
             "mapped_hits": mapped_hits,
         }
+
+    def _theme_pool_score(self, pool_name: str) -> float:
+        if pool_name == "limit_up":
+            return 3.0
+        if pool_name == "broken_limit_up":
+            return 1.0
+        if pool_name == "turnover_top20":
+            return 1.2
+        if pool_name == "limit_down":
+            return -2.0
+        return 1.5
 
     def _capacity_adjusted_theme_score(
         self,

@@ -660,7 +660,8 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(report.metadata["stock_pool_analysis"]["source_health"]["success"], 2)
         self.assertEqual(report.metadata["stock_pool_analysis"]["source_health"]["fallback"], 1)
         self.assertEqual(report.metadata["stock_pool_analysis"]["overlap"][0]["symbol"], "300001.SZ")
-        self.assertEqual(report.metadata["theme_rotation"]["main_themes"][0]["theme"], "软件")
+        theme_rows = report.metadata["theme_rotation"]["main_themes"] + report.metadata["theme_rotation"]["watch_themes"]
+        self.assertIn("软件", [item["theme"] for item in theme_rows])
         self.assertEqual(report.metadata["technical_coverage"]["success"], 1)
         self.assertIn("技术面", report.opportunities[0].trigger)
         self.assertIn("technical_score", report.opportunities[0].evidence)
@@ -916,6 +917,53 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(rotation["main_themes"][0]["capacity"], 10)
         self.assertEqual(rotation["main_themes"][0]["covered_symbols"], 2)
         self.assertGreater(rotation["main_themes"][0]["score"], rotation["main_themes"][0]["raw_score"])
+
+    def test_theme_rotation_counts_each_symbol_once_per_theme(self):
+        builder = DailyReportBuilder()
+        pools = [
+            StockPool(
+                name="limit_up",
+                description="当日涨停，不含ST",
+                entries=[StockPoolEntry("300001.SZ", "重复科技", "当日涨停", 1, {})],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            ),
+            StockPool(
+                name="turnover_top20",
+                description="换手率Top20",
+                entries=[
+                    StockPoolEntry("300001.SZ", "重复科技", "换手率Top20", 1, {}),
+                    StockPoolEntry("300002.SZ", "新进科技", "换手率Top20", 2, {}),
+                ],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            ),
+            StockPool(
+                name="main_net_inflow_top20",
+                description="主力净流入Top20",
+                entries=[StockPoolEntry("300001.SZ", "重复科技", "主力净流入", 1, {})],
+                source="test",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            ),
+        ]
+        mappings = {
+            "300001": {"industry_sectors": ["软件开发"], "concept_sectors": []},
+            "300002": {"industry_sectors": ["软件开发"], "concept_sectors": []},
+        }
+
+        rotation = builder._theme_rotation_analysis(pools, [], mappings)
+        themes = {item["theme"]: item for item in rotation["main_themes"] + rotation["watch_themes"]}
+        theme = themes["软件开发"]
+
+        self.assertEqual(theme["hits"], 2)
+        self.assertEqual(theme["covered_symbols"], 2)
+        self.assertEqual(theme["limit_up"], 1)
+        self.assertEqual(theme["turnover"], 2)
+        self.assertEqual(theme["raw_score"], 4.2)
+        self.assertEqual([item["symbol"] for item in theme["symbols"]], ["300001.SZ", "300002.SZ"])
 
     def test_capacity_adjusted_score_penalizes_large_low_coverage_themes(self):
         builder = DailyReportBuilder()
