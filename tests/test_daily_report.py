@@ -917,6 +917,14 @@ class DailyReportTest(unittest.TestCase):
         self.assertEqual(rotation["main_themes"][0]["covered_symbols"], 2)
         self.assertGreater(rotation["main_themes"][0]["score"], rotation["main_themes"][0]["raw_score"])
 
+    def test_capacity_adjusted_score_penalizes_large_low_coverage_themes(self):
+        builder = DailyReportBuilder()
+
+        large_low_coverage = builder._capacity_adjusted_theme_score(90.0, 0.05, 1000, 50)
+        focused_mid_coverage = builder._capacity_adjusted_theme_score(24.0, 0.16, 75, 12)
+
+        self.assertGreater(focused_mid_coverage, large_low_coverage)
+
     def test_opportunity_news_score_treats_share_freeze_as_negative(self):
         builder = DailyReportBuilder()
         items = [

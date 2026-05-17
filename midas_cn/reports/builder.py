@@ -1362,7 +1362,7 @@ class DailyReportBuilder:
             stat["capacity"] = capacity
             stat["covered_symbols"] = covered_symbols
             stat["coverage"] = coverage
-            stat["score"] = self._capacity_adjusted_theme_score(raw_score, coverage, capacity)
+            stat["score"] = self._capacity_adjusted_theme_score(raw_score, coverage, capacity, covered_symbols)
 
         ranked = sorted(theme_stats.values(), key=lambda item: (item["score"], item["coverage"], item["hits"]), reverse=True)
         rows = [self._theme_row(item) for item in ranked]
@@ -1396,11 +1396,20 @@ class DailyReportBuilder:
             "mapped_hits": mapped_hits,
         }
 
-    def _capacity_adjusted_theme_score(self, raw_score: float, coverage: float, capacity: int) -> float:
+    def _capacity_adjusted_theme_score(
+        self,
+        raw_score: float,
+        coverage: float,
+        capacity: int,
+        covered_symbols: int,
+    ) -> float:
         if capacity <= 0 or raw_score < 0:
             return raw_score
-        coverage_points = min(coverage * 100.0, 12.0)
-        return raw_score * 0.65 + coverage_points * 1.8
+        size_factor = min(2.0, max(0.25, math.sqrt(100.0 / capacity)))
+        coverage_points = min(coverage * 100.0, 20.0)
+        coverage_confidence = min(1.0, max(covered_symbols, 0) / 3.0)
+        breadth_points = min(math.sqrt(max(covered_symbols, 0)), 6.0)
+        return raw_score * size_factor * 0.7 + coverage_points * 2.0 * coverage_confidence + breadth_points
 
     def _theme_candidates_for_pool_entry(
         self,
