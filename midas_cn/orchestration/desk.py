@@ -14,7 +14,7 @@ from midas_cn.decision.engine import DecisionEngine
 from midas_cn.llm import build_report_synthesis_service
 from midas_cn.models import DailyReport, DecisionRun, KLineBar, SecurityContext, SourceStatus, StockPool, StockPoolEntry
 from midas_cn.playbooks.positioning import PositionPlaybook
-from midas_cn.pools.builder import AkShareStockPoolBuilder, latest_report_trade_date
+from midas_cn.pools.builder import AkShareStockPoolBuilder, POOL_NATIONAL_TEAM_ETF_WATCH, latest_report_trade_date
 from midas_cn.pools.storage import StockPoolArchive
 from midas_cn.pools.ths_cache import load_ths_sector_cache, symbol_classification
 from midas_cn.quality.gates import DataQualityGate
@@ -299,11 +299,14 @@ class TradingDesk:
         return pools
 
     def _stock_pool_cache_needs_rebuild(self, stock_pools) -> bool:
-        critical_names = {"main_net_inflow_top20", "small_float_net_inflow_top20"}
+        critical_names = {"main_net_inflow_top20", "small_float_net_inflow_top20", POOL_NATIONAL_TEAM_ETF_WATCH}
+        present_names = {pool.name for pool in stock_pools}
+        if not critical_names.issubset(present_names):
+            return True
         for pool in stock_pools:
             if pool.status == SourceStatus.FALLBACK:
                 return True
-            if pool.name in critical_names and pool.status == SourceStatus.FAILED:
+            if pool.name in critical_names and pool.status in {SourceStatus.FAILED, SourceStatus.MISSING}:
                 return True
         return False
 
@@ -380,6 +383,8 @@ class TradingDesk:
     ) -> list[dict[str, object]]:
         theme_scores: dict[str, dict[str, object]] = {}
         for pool in stock_pools:
+            if pool.name == POOL_NATIONAL_TEAM_ETF_WATCH:
+                continue
             if pool.status not in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}:
                 continue
             for entry in pool.entries:
@@ -581,6 +586,8 @@ class TradingDesk:
         }
         scores = {}
         for pool in stock_pools:
+            if pool.name == POOL_NATIONAL_TEAM_ETF_WATCH:
+                continue
             if pool.status not in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}:
                 continue
             for entry in pool.entries:

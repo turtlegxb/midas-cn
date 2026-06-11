@@ -20,7 +20,7 @@ from midas_cn.models import (
 )
 from midas_cn.data.news import source_results_to_dicts
 from midas_cn.llm.synthesis import ReportSynthesisService
-from midas_cn.pools.builder import to_number
+from midas_cn.pools.builder import POOL_NATIONAL_TEAM_ETF_WATCH, to_number
 
 
 def format_pct(value: float | None) -> str:
@@ -137,6 +137,7 @@ class DailyReportBuilder:
         index_state = self._index_state(market, index_profiles or {})
         sentiment_breadth = self._market_sentiment_breadth(calendar, market, market_news_results or [])
         pool_analysis = self._stock_pool_analysis(stock_pools or [])
+        national_team_etf = self._national_team_etf_analysis(stock_pools or [], market)
         theme_rotation = self._theme_rotation_analysis(
             stock_pools or [],
             report_opportunities,
@@ -240,6 +241,7 @@ class DailyReportBuilder:
                 "market_sentiment_breadth": sentiment_breadth,
                 "market_regime_score": market_regime_score,
                 "stock_pool_analysis": pool_analysis,
+                "national_team_etf": national_team_etf,
                 "theme_rotation": theme_rotation,
                 "selected_sector_mapping": selected_sector_mapping,
                 "xueqiu_tracking": xueqiu_tracking,
@@ -1007,7 +1009,7 @@ class DailyReportBuilder:
             for source, status in sorted(market_news_status.items())
         )
         rows.extend(
-            {"data": "选股池", "source": pool.source, "status": pool.status.value}
+            {"data": self._stock_pool_data_label(pool), "source": pool.source, "status": pool.status.value}
             for pool in stock_pools
         )
         if llm_result:
@@ -1183,7 +1185,7 @@ class DailyReportBuilder:
     def _stock_pool_source_results(self, stock_pools: list[StockPool]) -> list[dict]:
         return [
             {
-                "data": "选股池",
+                "data": self._stock_pool_data_label(pool),
                 "source": pool.source,
                 "provider": pool.name,
                 "status": pool.status.value,
@@ -1197,8 +1199,14 @@ class DailyReportBuilder:
             for pool in stock_pools
         ]
 
+    def _stock_pool_data_label(self, pool: StockPool) -> str:
+        if pool.name == POOL_NATIONAL_TEAM_ETF_WATCH:
+            return "国家队ETF监控"
+        return "选股池"
+
     def _stock_pool_analysis(self, stock_pools: list[StockPool]) -> dict:
-        if not stock_pools:
+        analysis_pools = [pool for pool in stock_pools if pool.name != POOL_NATIONAL_TEAM_ETF_WATCH]
+        if not analysis_pools:
             return {
                 "summary": "未加载当日选股池，报告仅基于默认观察股票池和指数环境生成。",
                 "action": "先运行 scripts/build_stock_pools.py 或开启正式归档生成，补齐选股池后再做主题交叉验证。",
@@ -1208,9 +1216,9 @@ class DailyReportBuilder:
                 "themes": [],
             }
 
-        status_counts = Counter(pool.status.value for pool in stock_pools)
-        usable_pools = [pool for pool in stock_pools if pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
-        failed_pools = [pool for pool in stock_pools if pool.status == SourceStatus.FAILED]
+        status_counts = Counter(pool.status.value for pool in analysis_pools)
+        usable_pools = [pool for pool in analysis_pools if pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
+        failed_pools = [pool for pool in analysis_pools if pool.status == SourceStatus.FAILED]
         symbol_pools: dict[str, dict[str, object]] = {}
         theme_counts: Counter[str] = Counter()
         for pool in usable_pools:
@@ -1286,6 +1294,72 @@ class DailyReportBuilder:
             "themes": themes,
         }
 
+    def _national_team_etf_analysis(self, stock_pools: list[StockPool], market: MarketSnapshot) -> dict:
+        pool = next((item for item in stock_pools if item.name == POOL_NATIONAL_TEAM_ETF_WATCH), None)
+        if pool is None:
+            return {
+                "status": "missing",
+                "source": "未获取",
+                "summary": "未加载国家队ETF监控池。",
+                "action": "补齐 fund_etf_spot_em 后再观察宽基ETF成交放量和承接强度。",
+                "rows": [],
+                "as_of": "",
+            }
+        rows = [
+            {
+                "symbol": entry.symbol,
+                "name": entry.name,
+                "category": entry.metrics.get("ETF类别"),
+                "amount": entry.metrics.get("成交额"),
+                "pct_change": entry.metrics.get("涨跌幅"),
+                "amount_ratio": entry.metrics.get("成交额/5日均额"),
+                "net_amount": entry.metrics.get("净额"),
+                "score": entry.metrics.get("承接评分"),
+                "signal": entry.metrics.get("监控信号"),
+                "inference": entry.metrics.get("行为推断"),
+            }
+            for entry in pool.entries
+        ]
+        top_rows = sorted(
+            rows,
+            key=lambda item: (
+                to_number(item.get("score")) or 0,
+                to_number(item.get("amount")) or 0,
+            ),
+            reverse=True,
+        )
+        strong = [item for item in top_rows if (to_number(item.get("score")) or 0) >= 0.72]
+        watch = [item for item in top_rows if 0.45 <= (to_number(item.get("score")) or 0) < 0.72]
+        if pool.status == SourceStatus.FAILED:
+            summary = f"国家队ETF监控数据源失败：{pool.error_message or '未知错误'}。"
+            action = "不把ETF承接纳入风险偏好确认，等待数据源恢复。"
+        elif strong:
+            names = "、".join(f"{item['symbol']} {item['name']}" for item in strong[:3])
+            prefix = "逆势" if market.benchmark_trend <= 0 else "顺势"
+            summary = f"{prefix}出现宽基ETF显著放量承接：{names}；只能判定行为特征，不能确认交易主体。"
+            action = "次日重点看这些ETF是否继续放量、对应指数是否低开后承接，以及个股宽度能否同步修复。"
+        elif watch:
+            names = "、".join(f"{item['symbol']} {item['name']}" for item in watch[:3])
+            summary = f"宽基ETF有放量承接线索：{names}；强度未达到疑似托底阈值。"
+            action = "作为风险偏好修复线索，不单独上调仓位；需要指数和涨跌家数二次确认。"
+        elif pool.entries:
+            summary = "重点宽基ETF未见异常放量，暂无国家队ETF行为确认。"
+            action = "不把ETF端当作正向确认，继续以指数趋势、成交额和主题扩散为主。"
+        else:
+            summary = "国家队ETF监控池为空。"
+            action = "检查 fund_etf_spot_em 是否返回目标宽基ETF代码。"
+        return {
+            "status": pool.status.value,
+            "source": pool.source,
+            "summary": summary,
+            "action": action,
+            "rows": top_rows[:12],
+            "as_of": pool.as_of,
+            "error_message": pool.error_message,
+            "strong_count": len(strong),
+            "watch_count": len(watch),
+        }
+
     def _theme_rotation_analysis(
         self,
         stock_pools: list[StockPool],
@@ -1293,7 +1367,11 @@ class DailyReportBuilder:
         stock_sector_mappings: dict[str, dict] | None = None,
         stock_sector_capacities: dict[str, int] | None = None,
     ) -> dict:
-        usable_pools = [pool for pool in stock_pools if pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
+        usable_pools = [
+            pool
+            for pool in stock_pools
+            if pool.name != POOL_NATIONAL_TEAM_ETF_WATCH and pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}
+        ]
         if not usable_pools:
             return {
                 "summary": "选股池缺失，暂无法判断板块轮动。",
@@ -1783,7 +1861,11 @@ class DailyReportBuilder:
         quality_gate: QualityGate,
         technical_profiles: dict[str, dict],
     ) -> list[Opportunity]:
-        usable_pools = [pool for pool in stock_pools if pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}]
+        usable_pools = [
+            pool
+            for pool in stock_pools
+            if pool.name != POOL_NATIONAL_TEAM_ETF_WATCH and pool.status in {SourceStatus.SUCCESS, SourceStatus.FALLBACK}
+        ]
         if not usable_pools:
             return []
         candidates: dict[str, dict] = {}

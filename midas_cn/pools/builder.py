@@ -16,6 +16,23 @@ POOL_TURNOVER = "turnover_top20"
 POOL_LIMIT_UP = "limit_up"
 POOL_LIMIT_DOWN = "limit_down"
 POOL_BROKEN_LIMIT_UP = "broken_limit_up"
+POOL_NATIONAL_TEAM_ETF_WATCH = "national_team_etf_watch"
+
+
+NATIONAL_TEAM_ETF_TARGETS = (
+    {"code": "510300", "name": "沪深300ETF", "category": "沪深300"},
+    {"code": "510310", "name": "沪深300ETF易方达", "category": "沪深300"},
+    {"code": "510330", "name": "沪深300ETF华夏", "category": "沪深300"},
+    {"code": "159919", "name": "沪深300ETF", "category": "沪深300"},
+    {"code": "510050", "name": "上证50ETF", "category": "上证50"},
+    {"code": "510500", "name": "中证500ETF", "category": "中证500"},
+    {"code": "512500", "name": "中证500ETF", "category": "中证500"},
+    {"code": "512100", "name": "中证1000ETF", "category": "中证1000"},
+    {"code": "159845", "name": "中证1000ETF", "category": "中证1000"},
+    {"code": "588000", "name": "科创50ETF", "category": "科创50"},
+    {"code": "588080", "name": "科创板50ETF", "category": "科创50"},
+    {"code": "159915", "name": "创业板ETF", "category": "创业板"},
+)
 
 
 class AkShareStockPoolBuilder:
@@ -94,6 +111,8 @@ class AkShareStockPoolBuilder:
                 as_of,
             )
         )
+        self._emit("拉取国家队ETF监控")
+        pools.append(self._national_team_etf_pool(as_of))
         self._emit("补齐选股池行业与概念")
         return self._fill_missing_industries(pools)
 
@@ -218,6 +237,151 @@ class AkShareStockPoolBuilder:
             as_of=as_of,
             error_message=error_message,
         )
+
+    def _national_team_etf_pool(self, as_of: str) -> StockPool:
+        rows, error = self._fetch_rows(self._fund_etf_spot_rows)
+        source = "akshare.fund_etf_spot_em"
+        if error:
+            return StockPool(
+                name=POOL_NATIONAL_TEAM_ETF_WATCH,
+                description="国家队ETF行为监控",
+                entries=[],
+                source=source,
+                status=SourceStatus.FAILED,
+                as_of=as_of,
+                error_message=error,
+            )
+
+        target_by_code = {item["code"]: item for item in NATIONAL_TEAM_ETF_TARGETS}
+        normalized_rows = normalize_etf_spot_rows(rows)
+        entries: list[StockPoolEntry] = []
+        history_errors = []
+        has_history_fetch = getattr(self.akshare, "fund_etf_hist_em", None) is not None
+        if has_history_fetch:
+            source = "akshare.fund_etf_spot_em + akshare.fund_etf_hist_em"
+        monitored_rows = []
+        for row in normalized_rows:
+            code = str(row_value(row, "代码", "基金代码", "code", "symbol") or "").zfill(6)
+            if code not in target_by_code:
+                continue
+            target = target_by_code[code]
+            history_metrics, history_error = self._etf_history_metrics(code, as_of)
+            if history_error:
+                history_errors.append(f"{code}: {history_error}")
+            item = {
+                **row,
+                **history_metrics,
+                "代码": code,
+                "名称": str(row_value(row, "名称", "基金简称") or target["name"]),
+                "ETF类别": target["category"],
+                "所属行业": "宽基ETF",
+            }
+            item.update(national_team_etf_metrics(item))
+            monitored_rows.append(item)
+
+        ranked = sorted(
+            monitored_rows,
+            key=lambda item: (
+                to_number(item.get("承接评分")) or 0,
+                to_number(item.get("成交额")) or 0,
+            ),
+            reverse=True,
+        )
+        for rank, row in enumerate(ranked[: self.top_n], start=1):
+            code = str(row.get("代码") or "").zfill(6)
+            metrics = {
+                field: row[field]
+                for field in (
+                    "ETF类别",
+                    "所属行业",
+                    "最新价",
+                    "涨跌幅",
+                    "成交额",
+                    "成交量",
+                    "换手率",
+                    "折溢价率",
+                    "净额",
+                    "5日均额",
+                    "成交额/5日均额",
+                    "承接评分",
+                    "监控信号",
+                    "行为推断",
+                )
+                if field in row and row[field] is not None
+            }
+            entries.append(
+                StockPoolEntry(
+                    symbol=normalize_symbol(code),
+                    name=str(row.get("名称") or target_by_code[code]["name"]),
+                    reason="国家队ETF行为监控",
+                    rank=rank,
+                    metrics=metrics,
+                )
+            )
+
+        if not entries:
+            return StockPool(
+                name=POOL_NATIONAL_TEAM_ETF_WATCH,
+                description="国家队ETF行为监控",
+                entries=[],
+                source=source,
+                status=SourceStatus.MISSING,
+                as_of=as_of,
+                error_message="fund_etf_spot_em did not return monitored broad ETF rows",
+            )
+        return StockPool(
+            name=POOL_NATIONAL_TEAM_ETF_WATCH,
+            description="国家队ETF行为监控",
+            entries=entries,
+            source=source,
+            status=SourceStatus.PARTIAL if history_errors else SourceStatus.SUCCESS,
+            as_of=as_of,
+            error_message="; ".join(history_errors[:5]) if history_errors else None,
+        )
+
+    def _fund_etf_spot_rows(self):
+        fetch = getattr(self.akshare, "fund_etf_spot_em", None)
+        if not fetch:
+            raise AttributeError("akshare missing fund_etf_spot_em")
+        return fetch()
+
+    def _etf_history_metrics(self, code: str, as_of: str) -> tuple[dict[str, Any], str | None]:
+        fetch = getattr(self.akshare, "fund_etf_hist_em", None)
+        if not fetch:
+            return {"历史均额状态": "missing"}, None
+        end_date = _compact_date(as_of) or datetime.now().strftime("%Y%m%d")
+        try:
+            start = datetime.strptime(end_date, "%Y%m%d").date() - timedelta(days=45)
+        except ValueError:
+            start = datetime.now().date() - timedelta(days=45)
+        rows, error = self._fetch_rows(
+            lambda: fetch(
+                symbol=code,
+                period="daily",
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end_date,
+                adjust="",
+            )
+        )
+        if error:
+            return {"历史均额状态": "failed"}, error
+        rows = sorted(rows, key=lambda row: _compact_date(row_value(row, "日期", "date", "交易日期")))
+        previous_rows = [
+            row
+            for row in rows
+            if _compact_date(row_value(row, "日期", "date", "交易日期"))
+            and _compact_date(row_value(row, "日期", "date", "交易日期")) < end_date
+        ]
+        if not previous_rows and len(rows) > 1:
+            previous_rows = rows[:-1]
+        amounts = [
+            amount
+            for amount in (to_number(row_value(row, "成交额", "amount")) for row in previous_rows[-5:])
+            if amount is not None and amount > 0
+        ]
+        if not amounts:
+            return {"历史均额状态": "missing"}, None
+        return {"5日均额": sum(amounts) / len(amounts), "历史均额状态": "success"}, None
 
     def _derived_limit_rows(self, spot_rows: list[dict[str, Any]], direction: str) -> list[dict[str, Any]]:
         rows = []
@@ -534,6 +698,41 @@ def normalize_spot_row(row: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def normalize_etf_spot_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = []
+    for row in rows:
+        code = row_value(row, "代码", "基金代码", "code", "symbol")
+        name = row_value(row, "名称", "基金简称", "name")
+        amount = row_value(row, "成交额", "amount")
+        volume = row_value(row, "成交量", "volume")
+        pct_change = row_value(row, "涨跌幅", "日增长率", "增长率", "changepercent")
+        latest = row_value(row, "最新价", "市价", "最新净值", "单位净值", "trade")
+        turnover = row_value(row, "换手率", "turnoverratio")
+        discount = row_value(row, "折溢价率", "折价率", "溢价率")
+        net_amount = row_value(row, "净额", "主力净流入", "主力净流入-净额", "资金流入净额")
+        item = dict(row)
+        if code is not None:
+            item["代码"] = str(code).zfill(6)
+        if name is not None:
+            item["名称"] = str(name)
+        if amount is not None:
+            item["成交额"] = to_number(amount)
+        if volume is not None:
+            item["成交量"] = to_number(volume)
+        if pct_change is not None:
+            item["涨跌幅"] = to_number(pct_change)
+        if latest is not None:
+            item["最新价"] = to_number(latest)
+        if turnover is not None:
+            item["换手率"] = to_number(turnover)
+        if discount is not None:
+            item["折溢价率"] = to_number(discount)
+        if net_amount is not None:
+            item["净额"] = to_number(net_amount)
+        normalized.append(item)
+    return normalized
+
+
 def merge_spot_rows(rows: list[dict[str, Any]], spot_by_code: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     merged = []
     for row in rows:
@@ -570,6 +769,76 @@ def multiply_optional(value: float | None, multiplier: float) -> float | None:
     if value is None:
         return None
     return value * multiplier
+
+
+def national_team_etf_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    amount = to_number(row_value(row, "成交额"))
+    avg_amount = to_number(row_value(row, "5日均额"))
+    pct_change = to_number(row_value(row, "涨跌幅"))
+    net_amount = to_number(row_value(row, "净额"))
+    amount_ratio = amount / avg_amount if amount and avg_amount and avg_amount > 0 else None
+    score = 0.0
+    if amount is not None:
+        if amount >= 10_000_000_000:
+            score += 0.34
+        elif amount >= 5_000_000_000:
+            score += 0.24
+        elif amount >= 2_000_000_000:
+            score += 0.14
+        elif amount >= 800_000_000:
+            score += 0.06
+    if amount_ratio is not None:
+        if amount_ratio >= 2.5:
+            score += 0.34
+        elif amount_ratio >= 1.8:
+            score += 0.25
+        elif amount_ratio >= 1.3:
+            score += 0.13
+    if net_amount is not None and net_amount > 0:
+        score += min(net_amount / 5_000_000_000, 0.12)
+    if pct_change is not None and amount_ratio is not None:
+        if pct_change <= -1.0 and amount_ratio >= 1.5:
+            score += 0.10
+        elif -0.8 <= pct_change <= 0.8 and amount_ratio >= 1.3:
+            score += 0.06
+        elif pct_change >= 2.5 and amount_ratio < 1.3:
+            score -= 0.04
+    score = round(max(0.0, min(1.0, score)), 3)
+    return {
+        "成交额/5日均额": round(amount_ratio, 2) if amount_ratio is not None else None,
+        "承接评分": score,
+        "监控信号": national_team_etf_signal(score),
+        "行为推断": national_team_etf_inference(score, pct_change, amount_ratio),
+    }
+
+
+def national_team_etf_signal(score: float) -> str:
+    if score >= 0.72:
+        return "疑似托底强"
+    if score >= 0.45:
+        return "放量承接"
+    if score >= 0.25:
+        return "温和增量"
+    return "无明显异动"
+
+
+def national_team_etf_inference(score: float, pct_change: float | None, amount_ratio: float | None) -> str:
+    if score >= 0.72 and pct_change is not None and pct_change <= 0:
+        return "宽基ETF逆势放量，疑似稳定资金承接；不能确认交易主体。"
+    if score >= 0.72:
+        return "宽基ETF显著放量，疑似中长期资金或配置资金集中流入；不能确认交易主体。"
+    if score >= 0.45:
+        return "ETF成交明显高于近期均值，说明指数层面有承接资金。"
+    if score >= 0.25:
+        return "ETF成交温和放大，仅作为风险偏好修复线索。"
+    if amount_ratio is None:
+        return "缺少历史均额，暂仅按当日成交额观察。"
+    return "未见异常放量，不作为国家队行为确认。"
+
+
+def _compact_date(value: Any) -> str:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits[:8] if len(digits) >= 8 else ""
 
 
 def combine_status(*statuses: SourceStatus) -> SourceStatus:

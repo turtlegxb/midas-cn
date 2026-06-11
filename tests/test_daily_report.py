@@ -188,6 +188,87 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("热门主题回调候选", opportunities[0].evidence["pools"])
         self.assertEqual(opportunities[0].evidence["entry_timing"]["state"], "ready")
 
+    def test_national_team_etf_pool_does_not_create_stock_opportunities(self):
+        builder = DailyReportBuilder()
+        pools = [
+            StockPool(
+                name="national_team_etf_watch",
+                description="国家队ETF行为监控",
+                entries=[
+                    StockPoolEntry(
+                        "510300.SH",
+                        "沪深300ETF",
+                        "国家队ETF行为监控",
+                        1,
+                        {"ETF类别": "沪深300", "成交额": 18_000_000_000, "成交额/5日均额": 3.0, "承接评分": 0.74, "监控信号": "疑似托底强"},
+                    )
+                ],
+                source="akshare.fund_etf_spot_em + akshare.fund_etf_hist_em",
+                status=SourceStatus.SUCCESS,
+                as_of="20260508",
+            )
+        ]
+
+        opportunities, hidden = builder.rank_report_opportunities(
+            [],
+            QualityGate(status=QualityStatus.PASS),
+            pools,
+            {"510300.SH": {"status": "success", "technical": {"trend_strength": 0.3}}},
+        )
+
+        self.assertEqual(opportunities, [])
+        self.assertEqual(hidden, [])
+
+    def test_national_team_etf_monitoring_renders(self):
+        builder = DailyReportBuilder()
+        market = MarketSnapshot(datetime(2026, 5, 8, 15, 0), -0.05, 0.45, 0.5, 0.3)
+        pool = StockPool(
+            name="national_team_etf_watch",
+            description="国家队ETF行为监控",
+            entries=[
+                StockPoolEntry(
+                    "510300.SH",
+                    "沪深300ETF",
+                    "国家队ETF行为监控",
+                    1,
+                    {
+                        "ETF类别": "沪深300",
+                        "成交额": 18_000_000_000,
+                        "涨跌幅": -0.6,
+                        "成交额/5日均额": 3.0,
+                        "净额": 1_000_000_000,
+                        "承接评分": 0.74,
+                        "监控信号": "疑似托底强",
+                        "行为推断": "宽基ETF逆势放量，疑似稳定资金承接；不能确认交易主体。",
+                    },
+                )
+            ],
+            source="akshare.fund_etf_spot_em + akshare.fund_etf_hist_em",
+            status=SourceStatus.SUCCESS,
+            as_of="20260508",
+        )
+        report = DailyReport(
+            run_id="20260508_150000",
+            as_of=datetime(2026, 5, 8, 15, 0),
+            calendar=TradingCalendarCheck("2026-05-08", True, True, "scheduled_post_close_report_day"),
+            quality_gate=QualityGate(QualityStatus.PASS),
+            market_snapshot=market,
+            action_summary=[],
+            opportunities=[],
+            position_plan=PositionPlan((0.2, 0.4), (0.0, 0.1), (0.5, 0.7), 0.05),
+            next_day_scenarios=[],
+            risk_warnings=[],
+            source_audit=[],
+            metadata={"national_team_etf": builder._national_team_etf_analysis([pool], market)},
+        )
+
+        rendered = MarkdownReportRenderer().render(report)
+
+        self.assertIn("国家队ETF行为监控", rendered)
+        self.assertIn("东方财富ETF实时与历史行情", rendered)
+        self.assertIn("| 510300.SH 沪深300ETF | 沪深300 | 180.0亿 | -0.60% | 3.00x | 10.0亿 | 0.74 | 疑似托底强 |", rendered)
+        self.assertIn("不能确认具体交易主体", rendered)
+
     def test_trading_desk_builds_theme_pullback_entries_from_hot_theme(self):
         config = load_config("config/system.toml")
         config.raw.setdefault("data", {})["provider"] = "mock"
@@ -776,7 +857,23 @@ class DailyReportTest(unittest.TestCase):
                         source="akshare.stock_main_fund_flow",
                         status=SourceStatus.FAILED,
                         as_of="20260508",
-                    )
+                    ),
+                    StockPool(
+                        name="small_float_net_inflow_top20",
+                        description="中小流通市值资金流入前二十",
+                        entries=[],
+                        source="akshare.stock_main_fund_flow + akshare.stock_zh_a_spot_em",
+                        status=SourceStatus.SUCCESS,
+                        as_of="20260508",
+                    ),
+                    StockPool(
+                        name="national_team_etf_watch",
+                        description="国家队ETF行为监控",
+                        entries=[],
+                        source="akshare.fund_etf_spot_em + akshare.fund_etf_hist_em",
+                        status=SourceStatus.SUCCESS,
+                        as_of="20260508",
+                    ),
                 ]
             )
         )
@@ -827,7 +924,23 @@ class DailyReportTest(unittest.TestCase):
                         source="akshare.stock_main_fund_flow",
                         status=SourceStatus.SUCCESS,
                         as_of="20260508",
-                    )
+                    ),
+                    StockPool(
+                        name="small_float_net_inflow_top20",
+                        description="中小流通市值资金流入前二十",
+                        entries=[],
+                        source="akshare.stock_main_fund_flow + akshare.stock_zh_a_spot_em",
+                        status=SourceStatus.SUCCESS,
+                        as_of="20260508",
+                    ),
+                    StockPool(
+                        name="national_team_etf_watch",
+                        description="国家队ETF行为监控",
+                        entries=[],
+                        source="akshare.fund_etf_spot_em + akshare.fund_etf_hist_em",
+                        status=SourceStatus.SUCCESS,
+                        as_of="20260508",
+                    ),
                 ]
             )
         )

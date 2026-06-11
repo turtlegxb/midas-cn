@@ -63,6 +63,32 @@ class MarkdownReportRenderer:
             "技术指标说明：RSI14 与 EMA8 基于可获取的指数日K复算；RSI > 70 视为偏热，RSI > 80 视为严重超买。若指数K线不可用，则仅保留市场快照派生判断。",
         ])
 
+        etf_watch = report.metadata.get("national_team_etf", {})
+        lines.extend([
+            "",
+            "## 国家队ETF行为监控",
+            "",
+            f"- 状态：{status_label(etf_watch.get('status', 'missing'))}",
+            f"- 数据源：{source_label(etf_watch.get('source', '未获取'))}",
+            f"- 综合判断：{clean_markdown_field(etf_watch.get('summary'))}",
+            f"- 次日动作：{clean_markdown_field(etf_watch.get('action'))}",
+        ])
+        if etf_watch.get("rows"):
+            lines.extend([
+                "",
+                "| ETF | 跟踪方向 | 成交额 | 涨跌幅 | 成交额/5日均 | 净流入 | 承接评分 | 信号 |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
+            ])
+            for item in etf_watch.get("rows", [])[:12]:
+                lines.append(
+                    f"| {format_symbol_name(item.get('symbol'), item.get('name'))} | {item.get('category') or '-'} | "
+                    f"{format_china_amount(item.get('amount'))} | {format_metric_pct(item.get('pct_change'))} | "
+                    f"{format_ratio(item.get('amount_ratio'))} | {format_china_amount(item.get('net_amount'))} | "
+                    f"{format_score(item.get('score'))} | {item.get('signal') or '-'} |"
+                )
+            lines.append("")
+            lines.append("注：该监控只能识别宽基ETF成交放量和承接行为，不能确认具体交易主体。")
+
         lines.extend([
             "",
             "## 市场情绪与宽度",
@@ -360,6 +386,8 @@ def source_label(value: object) -> str:
         "akshare.stock_zt_pool_em": "东方财富涨停池",
         "akshare.stock_zt_pool_dtgc_em": "东方财富跌停池",
         "akshare.stock_zt_pool_zbgc_em": "东方财富炸板池",
+        "akshare.fund_etf_spot_em": "东方财富ETF实时行情",
+        "akshare.fund_etf_spot_em + akshare.fund_etf_hist_em": "东方财富ETF实时与历史行情",
         "derived.spot.limit_up(akshare.stock_zh_a_spot_em)": "行情自计算涨停池",
         "derived.spot.limit_down(akshare.stock_zh_a_spot_em)": "行情自计算跌停池",
         "derived.spot.limit_up(sina.Market_Center.getHQNodeData)": "新浪行情自计算涨停池",
@@ -398,6 +426,7 @@ def pool_label(value: object) -> str:
         "limit_up": "当日涨停",
         "limit_down": "当日跌停",
         "broken_limit_up": "当日炸板",
+        "national_team_etf_watch": "国家队ETF行为监控",
     }.get(str(value), str(value))
 
 
@@ -462,6 +491,43 @@ def format_weight(value: object) -> str:
         return f"{float(value):.2f}%"
     except (TypeError, ValueError):
         return str(value)
+
+
+def format_china_amount(value: object) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{number / 100_000_000:.1f}亿"
+
+
+def format_metric_pct(value: object) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{number:+.2f}%"
+
+
+def format_ratio(value: object) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{number:.2f}x"
+
+
+def format_score(value: object) -> str:
+    number = safe_float(value)
+    if number is None:
+        return "-"
+    return f"{number:.2f}"
+
+
+def safe_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def symbol_list(items: list[dict]) -> str:

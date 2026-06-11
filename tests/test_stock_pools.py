@@ -12,6 +12,7 @@ from midas_cn.pools.builder import (
     POOL_LIMIT_DOWN,
     POOL_LIMIT_UP,
     POOL_MAIN_NET_INFLOW,
+    POOL_NATIONAL_TEAM_ETF_WATCH,
     POOL_SMALL_FLOAT_NET_INFLOW,
     POOL_TURNOVER,
     AkShareStockPoolBuilder,
@@ -53,6 +54,30 @@ class FakeAkShare:
 
     def stock_zt_pool_zbgc_em(self, date: str):
         return [{"代码": "605001", "名称": "炸板一号", "成交额": "4亿", "换手率": "18", "炸板次数": 2}]
+
+    def fund_etf_spot_em(self):
+        return [
+            {"代码": "510300", "名称": "沪深300ETF", "最新价": 4.0, "涨跌幅": -0.6, "成交额": 18_000_000_000, "成交量": 4_500_000_000},
+            {"代码": "510050", "名称": "上证50ETF", "最新价": 2.8, "涨跌幅": 0.2, "成交额": 2_000_000_000, "成交量": 700_000_000},
+            {"代码": "159915", "名称": "创业板ETF", "最新价": 1.9, "涨跌幅": 1.5, "成交额": 900_000_000, "成交量": 480_000_000},
+            {"代码": "513500", "名称": "标普500ETF", "最新价": 2.0, "涨跌幅": 0.5, "成交额": 1_000_000_000},
+        ]
+
+    def fund_etf_hist_em(self, symbol: str, period: str, start_date: str, end_date: str, adjust: str):
+        avg_amounts = {
+            "510300": 6_000_000_000,
+            "510050": 1_800_000_000,
+            "159915": 800_000_000,
+        }
+        amount = avg_amounts.get(symbol, 1_000_000_000)
+        return [
+            {"日期": "2026-05-01", "成交额": amount},
+            {"日期": "2026-05-04", "成交额": amount},
+            {"日期": "2026-05-05", "成交额": amount},
+            {"日期": "2026-05-06", "成交额": amount},
+            {"日期": "2026-05-07", "成交额": amount},
+            {"日期": "2026-05-08", "成交额": amount * 2},
+        ]
 
 
 class FailingAkShare(FakeAkShare):
@@ -135,6 +160,7 @@ class StockPoolBuilderTest(unittest.TestCase):
                 POOL_LIMIT_UP,
                 POOL_LIMIT_DOWN,
                 POOL_BROKEN_LIMIT_UP,
+                POOL_NATIONAL_TEAM_ETF_WATCH,
             },
         )
         self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].status, SourceStatus.SUCCESS)
@@ -144,9 +170,14 @@ class StockPoolBuilderTest(unittest.TestCase):
         self.assertEqual(by_name[POOL_MAIN_NET_INFLOW].entries[0].metrics["所属行业"], "银行")
         self.assertEqual(by_name[POOL_SMALL_FLOAT_NET_INFLOW].entries[0].metrics["所属行业"], "房地产")
         self.assertEqual(by_name[POOL_TURNOVER].entries[0].metrics["所属行业"], "房地产")
+        self.assertEqual(by_name[POOL_NATIONAL_TEAM_ETF_WATCH].status, SourceStatus.SUCCESS)
+        self.assertEqual(by_name[POOL_NATIONAL_TEAM_ETF_WATCH].entries[0].symbol, "510300.SH")
+        self.assertEqual(by_name[POOL_NATIONAL_TEAM_ETF_WATCH].entries[0].metrics["监控信号"], "疑似托底强")
+        self.assertGreater(by_name[POOL_NATIONAL_TEAM_ETF_WATCH].entries[0].metrics["成交额/5日均额"], 2.5)
         self.assertEqual([entry.symbol for entry in by_name[POOL_LIMIT_UP].entries], ["300001.SZ"])
         self.assertTrue(all("ST" not in entry.name for pool in pools for entry in pool.entries))
         self.assertIn("拉取资金流选股池", progress_messages)
+        self.assertIn("拉取国家队ETF监控", progress_messages)
         self.assertIn("补齐选股池行业与概念", progress_messages)
 
     def test_sector_cache_overrides_pool_industry_and_adds_concepts(self):
